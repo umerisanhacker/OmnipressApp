@@ -9,6 +9,9 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+// Configure Sharp to use all available CPU cores for maximum processing speed
+sharp.concurrency(0);
+
 // Configure automatic bundled FFmpeg binaries
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 
@@ -18,7 +21,7 @@ const PORT = process.env.PORT || 3000;
 app.use(cors());
 app.use(express.json());
 
-// FIX: Serve static files from the root directory where index.html resides
+// Serve static files from the root directory where index.html resides
 app.use(express.static(__dirname));
 
 const storage = multer.memoryStorage();
@@ -161,6 +164,8 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
                                 `-fs ${targetSizeBytes}`,
                                 '-preset ultrafast',
                                 '-tune zerolatency',
+                                '-threads 0',      // Uses all available CPU threads for faster encoding
+                                '-row-mt 1',       // Enables row-based multithreading
                                 `-vf ${scaleFilter}`
                             ];
 
