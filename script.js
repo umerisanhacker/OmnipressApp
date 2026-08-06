@@ -108,15 +108,21 @@ document.addEventListener('DOMContentLoaded', () => {
         showStatus('Uploading and processing file... Please wait.', 'success');
 
         try {
-            // Change this line in frontend/script.js:
-const response = await fetch('/api/compress/universal', {
-    method: 'POST',
-    body: formData
-});
+            const response = await fetch('/api/compress/universal', {
+                method: 'POST',
+                body: formData
+            });
 
             if (!response.ok) {
-                const errorData = await response.json();
-                throw new Error(errorData.error || 'Server processing failed.');
+                let errorMessage = 'Server processing failed.';
+                try {
+                    const errorData = await response.json();
+                    errorMessage = errorData.error || errorMessage;
+                } catch (parseErr) {
+                    const errorText = await response.text();
+                    if (errorText) errorMessage = errorText;
+                }
+                throw new Error(errorMessage);
             }
 
             const blob = await response.blob();
