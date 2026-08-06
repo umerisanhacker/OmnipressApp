@@ -71,7 +71,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Advanced Multi-Pass Client-Side Image Compressor to hit strict Target KB
+    // Ultra-Aggressive Client-Side Compressor designed to strictly match Target KB
     async function compressImageClientSide(file, targetSizeKB, format) {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
@@ -86,6 +86,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     
                     let mimeType = 'image/jpeg';
                     let ext = 'jpg';
+
                     if (format === 'png' || file.type === 'image/png') {
                         mimeType = 'image/png';
                         ext = 'png';
@@ -95,6 +96,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     } else if (format === 'avif') {
                         mimeType = 'image/avif';
                         ext = 'avif';
+                    } else if (format === 'auto' && file.type === 'image/png' && targetSizeKB < (file.size / 1024)) {
+                        // Smart switch PNG to WebP for aggressive size reduction to hit strict targets
+                        mimeType = 'image/webp';
+                        ext = 'webp';
                     }
 
                     let canvas = document.createElement('canvas');
@@ -103,7 +108,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     let scale = 1.0;
                     let bestBlob = null;
 
-                    // If file is already smaller than target, keep original
                     if (file.size <= targetBytes) {
                         canvas.width = width;
                         canvas.height = height;
@@ -114,18 +118,18 @@ document.addEventListener('DOMContentLoaded', () => {
                         return;
                     }
 
-                    // Iteratively scale down dimensions and reduce quality until we hit the target size
-                    for (let attempt = 0; attempt < 6; attempt++) {
-                        let currentWidth = Math.max(80, Math.round(width * scale));
-                        let currentHeight = Math.max(80, Math.round(height * scale));
+                    // Multi-pass strict size enforcement loop
+                    for (let attempt = 0; attempt < 10; attempt++) {
+                        let currentWidth = Math.max(50, Math.round(width * scale));
+                        let currentHeight = Math.max(50, Math.round(height * scale));
                         
                         canvas.width = currentWidth;
                         canvas.height = currentHeight;
                         ctx.clearRect(0, 0, currentWidth, currentHeight);
                         ctx.drawImage(img, 0, 0, currentWidth, currentHeight);
 
-                        for (let q = 0.85; q >= 0.1; q -= 0.15) {
-                            const blob = await new Promise(res => canvas.toBlob(res, mimeType, q));
+                        if (mimeType === 'image/png') {
+                            const blob = await new Promise(res => canvas.toBlob(res, mimeType));
                             if (blob) {
                                 bestBlob = blob;
                                 if (blob.size <= targetBytes) {
@@ -133,8 +137,20 @@ document.addEventListener('DOMContentLoaded', () => {
                                     return;
                                 }
                             }
+                            scale *= 0.65; // Aggressively scale down dimensions for PNG
+                        } else {
+                            for (let q = 0.90; q >= 0.1; q -= 0.15) {
+                                const blob = await new Promise(res => canvas.toBlob(res, mimeType, q));
+                                if (blob) {
+                                    bestBlob = blob;
+                                    if (blob.size <= targetBytes) {
+                                        resolve({ blob, ext });
+                                        return;
+                                    }
+                                }
+                            }
+                            scale *= 0.70;
                         }
-                        scale *= 0.65; // Aggressively scale down dimensions if still too large
                     }
 
                     resolve({ blob: bestBlob || file, ext });
