@@ -87,6 +87,53 @@ document.addEventListener('DOMContentLoaded', () => {
         statusMessage.className = 'hidden';
     });
 
+    // Helper function for quick browser-side image compression to speed up uploads
+    async function compressImageClientSide(file) {
+        if (!file.type.startsWith('image/') || file.type === 'image/gif') return file;
+
+        return new Promise((resolve) => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    let width = img.width;
+                    let height = img.height;
+
+                    const MAX_DIMENSION = 1920;
+                    if (width > MAX_DIMENSION || height > MAX_DIMENSION) {
+                        if (width > height) {
+                            height = Math.round((height * MAX_DIMENSION) / width);
+                            width = MAX_DIMENSION;
+                        } else {
+                            width = Math.round((width * MAX_DIMENSION) / height);
+                            height = MAX_DIMENSION;
+                        }
+                    }
+
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    canvas.toBlob((blob) => {
+                        if (!blob) {
+                            resolve(file);
+                            return;
+                        }
+                        const optimizedFile = new File([blob], file.name, {
+                            type: 'image/jpeg',
+                            lastModified: Date.now()
+                        });
+                        resolve(optimizedFile);
+                    }, 'image/jpeg', 0.85);
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        });
+    }
+
     uploadForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         
@@ -95,19 +142,27 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
-        const targetSize = document.getElementById('targetSize').value;
-        const outputFormat = document.getElementById('outputFormat').value;
-        
-        const formData = new FormData();
-        formData.append('file', currentFile);
-        formData.append('targetSize', targetSize);
-        formData.append('outputFormat', outputFormat);
-
         submitBtn.disabled = true;
         submitBtn.textContent = 'Processing...';
-        showStatus('Uploading and processing file... Please wait.', 'success');
+        showStatus('Preparing file... Please wait.', 'success');
 
         try {
+            let fileToSend = currentFile;
+            if (currentFile.type.startsWith('image/')) {
+                showStatus('Quick-compressing image in browser...', 'success');
+                fileToSend = await compressImageClientSide(currentFile);
+            }
+
+            const targetSize = document.getElementById('targetSize').value;
+            const outputFormat = document.getElementById('outputFormat').value;
+            
+            const formData = new FormData();
+            formData.append('file', fileToSend);
+            formData.append('targetSize', targetSize);
+            formData.append('outputFormat', outputFormat);
+
+            showStatus('Uploading and processing file... Please wait.', 'success');
+
             const response = await fetch('/api/compress/universal', {
                 method: 'POST',
                 body: formData
