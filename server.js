@@ -43,13 +43,12 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
     }
 
     const mimeType = req.file.mimetype;
-    const requestedFormat = req.body.outputFormat || 'auto';
     const targetSizeKB = parseInt(req.body.targetSize) || 1500;
     const originalName = sanitizeFilename(req.file.originalname);
     const ext = originalName.split('.').pop().toLowerCase();
     const uniqueId = `${Date.now()}_${Math.round(Math.random() * 1e9)}`;
     
-    console.log(`[ROUTER] File: ${originalName} | Type: ${mimeType} | Target: ${targetSizeKB}KB | Format: ${requestedFormat}`);
+    console.log(`[ROUTER] File: ${originalName} | Type: ${mimeType} | Target: ${targetSizeKB}KB`);
 
     try {
         // --- VIDEO & AUDIO ROUTING ---
@@ -57,7 +56,7 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
             console.log(`[ROUTER] Routing to FFmpeg Media Engine...`);
             
             const tempInputPath = path.join(os.tmpdir(), `temp_in_${uniqueId}_${originalName}`);
-            const isMp3 = requestedFormat === 'mp3' || mimeType.startsWith('audio/');
+            const isMp3 = mimeType.startsWith('audio/') || ext === 'mp3';
             const tempOutputPath = path.join(os.tmpdir(), `temp_out_${uniqueId}.${isMp3 ? 'mp3' : 'mp4'}`);
 
             fs.writeFileSync(tempInputPath, req.file.buffer);
