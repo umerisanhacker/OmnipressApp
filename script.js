@@ -102,55 +102,70 @@ document.addEventListener('DOMContentLoaded', () => {
         let height = img.height;
         let scale = 1.0;
         let bestBlob = null;
+        let minDifference = Infinity;
         
         const isPng = mimeType === 'image/png';
         
-        // Iteratively downscale dimensions and reduce quality until target size is achieved
-        for (let attempt = 0; attempt < 8; attempt++) {
-            canvas.width = Math.max(20, Math.round(width * scale));
-            canvas.height = Math.max(20, Math.round(height * scale));
+        for (let attempt = 0; attempt < 6; attempt++) {
+            canvas.width = Math.max(50, Math.round(width * scale));
+            canvas.height = Math.max(50, Math.round(height * scale));
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
             if (!isPng && (mimeType === 'image/jpeg' || mimeType === 'image/webp')) {
                 let low = 0.05, high = 1.0;
-                for (let q = 0; q < 5; q++) {
+                let bestQualityBlobThisScale = null;
+                
+                for (let q = 0; q < 7; q++) {
                     let mid = (low + high) / 2;
                     let blob = await new Promise(res => canvas.toBlob(res, mimeType, mid));
                     if (blob) {
-                        bestBlob = blob;
+                        const diff = targetBytes - blob.size;
                         if (blob.size <= targetBytes) {
-                            return { blob, ext: originalExt };
-                        }
-                        if (blob.size > targetBytes) {
-                            high = mid;
-                        } else {
+                            bestQualityBlobThisScale = blob;
+                            if (diff < minDifference) {
+                                minDifference = diff;
+                                bestBlob = blob;
+                            }
                             low = mid;
+                        } else {
+                            high = mid;
                         }
+                    }
+                }
+                if (!bestQualityBlobThisScale && high === 1.0) {
+                    let blob = await new Promise(res => canvas.toBlob(res, mimeType, 0.05));
+                    if (blob && blob.size < targetBytes && (targetBytes - blob.size < minDifference)) {
+                        minDifference = targetBytes - blob.size;
+                        bestBlob = blob;
                     }
                 }
             } else {
                 let blob = await new Promise(res => canvas.toBlob(res, mimeType));
                 if (blob) {
-                    bestBlob = blob;
-                    if (blob.size <= targetBytes) {
-                        return { blob, ext: originalExt };
+                    const diff = targetBytes - blob.size;
+                    if (blob.size <= targetBytes && diff < minDifference) {
+                        minDifference = diff;
+                        bestBlob = blob;
                     }
                 }
             }
 
-            scale *= 0.8; // Reduce dimensions by 20% each loop iteration
+            if (bestBlob && Math.abs(targetBytes - bestBlob.size) / targetBytes < 0.05) {
+                return { blob: bestBlob, ext: originalExt };
+            }
+
+            scale *= 0.85;
         }
 
         if (bestBlob) {
             return { blob: bestBlob, ext: originalExt };
         }
 
-        // Ultimate fallback
-        canvas.width = Math.max(20, Math.round(width * 0.2));
-        canvas.height = Math.max(20, Math.round(height * 0.2));
+        canvas.width = Math.max(50, Math.round(width * 0.2));
+        canvas.height = Math.max(50, Math.round(height * 0.2));
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        let fallbackBlob = await new Promise(res => canvas.toBlob(res, mimeType, 0.5));
+        let fallbackBlob = await new Promise(res => canvas.toBlob(res, mimeType, 0.3));
         return { blob: fallbackBlob || img, ext: originalExt };
     }
 
@@ -162,37 +177,50 @@ document.addEventListener('DOMContentLoaded', () => {
         const isImage = file.type.startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'avif'].includes(extName);
 
         if (isPdf) {
-            const arrayBuffer = await file.arrayBuffer();
-            const pdfDoc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-            const page = await pdfDoc.getPage(1);
-            let viewport = page.getViewport({ scale: 1.5 });
-            
-            let canvas = document.createElement('canvas');
-            let ctx = canvas.getContext('2d');
-            canvas.height = viewport.height;
-            canvas.width = viewport.width;
-            await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+            try {
+                const arrayBuffer = await file.arrayBuffer();
+                const pdfDoc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                const numPages = pdfDoc.numPages;
+                
+                // Distribute target budget across all pages securely
+                const targetBytesPerPage = Math.max(8192, Math.floor(targetBytes / numPages));
+                const newPdfDoc = await window.PDFLib.PDFDocument.create();
 
-            let img = new Image();
-            img.src = canvas.toDataURL('image/jpeg', 0.9);
-            await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
+                for (let i = 1; i <= numPages; i++) {
+                    const page = await pdfDoc.getPage(i);
+                    let scale = numPages > 50 ? 0.75 : 1.0;
+                    let viewport = page.getViewport({ scale: scale });
+                    
+                    let canvas = document.createElement('canvas');
+                    let ctx = canvas.getContext('2d');
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+                    await page.render({ canvasContext: ctx, viewport: viewport }).promise;
 
-            let result = await compressImageToTargetObject(img, targetBytes, 'image/jpeg', 'jpg');
-            
-            const newPdfDoc = await window.PDFLib.PDFDocument.create();
-            const newPage = newPdfDoc.addPage([canvas.width, canvas.height]);
-            const imageBytes = await result.blob.arrayBuffer();
-            const embeddedImage = await newPdfDoc.embedJpg(imageBytes);
-            
-            newPage.drawImage(embeddedImage, {
-                x: 0,
-                y: 0,
-                width: canvas.width,
-                height: canvas.height,
-            });
+                    let img = new Image();
+                    img.src = canvas.toDataURL('image/jpeg', 0.85);
+                    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
 
-            const pdfBytes = await newPdfDoc.save();
-            return { blob: new Blob([pdfBytes], { type: 'application/pdf' }), ext: 'pdf' };
+                    let result = await compressImageToTargetObject(img, targetBytesPerPage, 'image/jpeg', 'jpg');
+                    
+                    const imageBytes = await result.blob.arrayBuffer();
+                    const embeddedImage = await newPdfDoc.embedJpg(imageBytes);
+                    
+                    const newPage = newPdfDoc.addPage([viewport.width, viewport.height]);
+                    newPage.drawImage(embeddedImage, {
+                        x: 0,
+                        y: 0,
+                        width: viewport.width,
+                        height: viewport.height,
+                    });
+                }
+
+                const pdfBytes = await newPdfDoc.save();
+                return { blob: new Blob([pdfBytes], { type: 'application/pdf' }), ext: 'pdf' };
+            } catch (pdfErr) {
+                console.warn("[PDF FALLBACK] Client parsing failed, switching to server engine:", pdfErr);
+                throw new Error("SERVER_FALLBACK");
+            }
         } else if (isImage) {
             const mimeType = file.type || 'image/jpeg';
             return new Promise((resolve, reject) => {
@@ -239,9 +267,36 @@ document.addEventListener('DOMContentLoaded', () => {
                 let blob, finalExt;
 
                 if (isClientProcessable) {
-                    const result = await compressFileClientSide(selectedFile, targetSizeVal);
-                    blob = result.blob;
-                    finalExt = result.ext;
+                    try {
+                        const result = await compressFileClientSide(selectedFile, targetSizeVal);
+                        blob = result.blob;
+                        finalExt = result.ext;
+                    } catch (clientErr) {
+                        if (clientErr.message === "SERVER_FALLBACK") {
+                            const formData = new FormData();
+                            formData.append('file', selectedFile);
+                            formData.append('targetSize', targetSizeVal);
+
+                            const response = await fetch('/api/compress/universal', {
+                                method: 'POST',
+                                body: formData
+                            });
+
+                            if (!response.ok) {
+                                let errorMessage = 'Compression failed on server.';
+                                try {
+                                    const errData = await response.json();
+                                    errorMessage = errData.error || errorMessage;
+                                } catch (e) {}
+                                throw new Error(errorMessage);
+                            }
+
+                            blob = await response.blob();
+                            finalExt = 'zip';
+                        } else {
+                            throw clientErr;
+                        }
+                    }
                 } else {
                     const formData = new FormData();
                     formData.append('file', selectedFile);
@@ -269,7 +324,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const baseName = selectedFile.name.includes('.') 
                     ? selectedFile.name.substring(0, selectedFile.name.lastIndexOf('.')) 
                     : selectedFile.name;
-                const finalDownloadName = `${baseName}.${finalExt}`;
+                const finalDownloadName = finalExt === 'zip' ? `${baseName}-compressed.zip` : `${baseName}.${finalExt}`;
 
                 const a = document.createElement('a');
                 a.href = downloadUrl;
