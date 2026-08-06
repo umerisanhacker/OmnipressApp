@@ -17,13 +17,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let selectedFile = null;
 
-    // Make clicking the drop zone open the file explorer reliably
     dropZone.addEventListener('click', (e) => {
         if (e.target.closest('#cancelBtn')) return;
         fileInput.click();
     });
 
-    // Handle file selection via file explorer
     fileInput.addEventListener('change', (e) => {
         if (e.target.files && e.target.files.length > 0) {
             selectedFile = e.target.files[0];
@@ -43,11 +41,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Handle remove/cancel file button
     if (cancelBtn) {
         cancelBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-
             selectedFile = null;
             fileInput.value = '';
 
@@ -60,7 +56,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Drag and drop handlers
     ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
         dropZone.addEventListener(eventName, (e) => {
             e.preventDefault();
@@ -76,7 +71,77 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Handle compression request submission with robust error handling and correct extension mapping
+    // Helper: Instant client-side compression for images using HTML5 Canvas
+    async function compressImageClientSide(file, targetSizeKB, format) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.readAsDataURL(file);
+            reader.onload = (event) => {
+                const img = new Image();
+                img.src = event.target.result;
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    let width = img.width;
+                    let height = img.height;
+
+                    // Scale down dimensions if image is extremely large to hit target size faster
+                    const maxDim = 2000;
+                    if (width > maxDim || height > maxDim) {
+                        if (width > height) {
+                            height = Math.round((height * maxDim) / width);
+                            width = maxDim;
+                        } else {
+                            width = Math.round((width * maxDim) / height);
+                            height = maxDim;
+                        }
+                    }
+
+                    canvas.width = width;
+                    canvas.height = height;
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, width, height);
+
+                    // Determine output MIME type
+                    let mimeType = 'image/jpeg';
+                    let ext = 'jpg';
+                    if (format === 'png' || file.type === 'image/png') {
+                        mimeType = 'image/png';
+                        ext = 'png';
+                    } else if (format === 'webp') {
+                        mimeType = 'image/webp';
+                        ext = 'webp';
+                    } else if (format === 'avif') {
+                        mimeType = 'image/avif';
+                        ext = 'avif';
+                    }
+
+                    // Iteratively reduce quality to approximate target size instantly
+                    let quality = 0.9;
+                    const targetBytes = targetSizeKB * 1024;
+
+                    const attemptCompression = () => {
+                        canvas.toBlob((blob) => {
+                            if (!blob) {
+                                reject(new Error('Canvas compression failed.'));
+                                return;
+                            }
+                            if (blob.size <= targetBytes || quality <= 0.1 || mimeType === 'image/png') {
+                                resolve({ blob, ext });
+                            } else {
+                                quality -= 0.15;
+                                attemptCompression();
+                            }
+                        }, mimeType, quality);
+                    };
+
+                    attemptCompression();
+                };
+                img.onerror = (err) => reject(err);
+            };
+            reader.onerror = (err) => reject(err);
+        });
+    }
+
     if (compressBtn) {
         compressBtn.addEventListener('click', async () => {
             if (!selectedFile) {
@@ -84,12 +149,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 return;
             }
 
-            const formData = new FormData();
-            formData.append('file', selectedFile);
-            
             const chosenFormat = formatSelect ? formatSelect.value : 'auto';
-            formData.append('outputFormat', chosenFormat);
-            formData.append('targetSize', targetSizeInput ? targetSizeInput.value : '1500');
+            const targetSizeVal = targetSizeInput ? parseInt(targetSizeInput.value) || 1500 : 1500;
+            const isImage = selectedFile.type.startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'avif'].includes(selectedFile.name.split('.').pop().toLowerCase());
 
             if (statusDiv) {
                 statusDiv.classList.remove('hidden');
@@ -97,40 +159,44 @@ document.addEventListener('DOMContentLoaded', () => {
                 statusDiv.style.color = '#007bff';
             }
 
-            // Set up a 90-second timeout controller so the UI never hangs indefinitely
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 90000);
-
             try {
-                const response = await fetch('/api/compress/universal', {
-                    method: 'POST',
-                    body: formData,
-                    signal: controller.signal
-                });
+                let blob, finalExt;
 
-                clearTimeout(timeoutId);
+                // If it's an image, process it instantly in the browser client-side!
+                if (isImage) {
+                    const result = await compressImageClientSide(selectedFile, targetSizeVal, chosenFormat);
+                    blob = result.blob;
+                    finalExt = result.ext;
+                } else {
+                    // Fallback to server for videos, PDFs, and documents
+                    const formData = new FormData();
+                    formData.append('file', selectedFile);
+                    formData.append('outputFormat', chosenFormat);
+                    formData.append('targetSize', targetSizeVal);
 
-                if (!response.ok) {
-                    let errorMessage = 'Compression failed on server.';
-                    try {
-                        const errData = await response.json();
-                        errorMessage = errData.error || errorMessage;
-                    } catch (e) {}
-                    throw new Error(errorMessage);
+                    const response = await fetch('/api/compress/universal', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (!response.ok) {
+                        let errorMessage = 'Compression failed on server.';
+                        try {
+                            const errData = await response.json();
+                            errorMessage = errData.error || errorMessage;
+                        } catch (e) {}
+                        throw new Error(errorMessage);
+                    }
+
+                    blob = await response.blob();
+                    finalExt = chosenFormat !== 'auto' ? chosenFormat : selectedFile.name.split('.').pop();
                 }
 
-                const blob = await response.blob();
                 const downloadUrl = window.URL.createObjectURL(blob);
-                
-                // Dynamically determine correct file extension based on user selection
-                let outputExtension = selectedFile.name.split('.').pop();
-                if (chosenFormat && chosenFormat !== 'auto') {
-                    outputExtension = chosenFormat;
-                }
                 const baseName = selectedFile.name.includes('.') 
                     ? selectedFile.name.substring(0, selectedFile.name.lastIndexOf('.')) 
                     : selectedFile.name;
-                const finalDownloadName = `${baseName}.${outputExtension}`;
+                const finalDownloadName = `${baseName}.${finalExt}`;
 
                 const a = document.createElement('a');
                 a.href = downloadUrl;
@@ -145,20 +211,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     statusDiv.style.color = '#28a745';
                 }
             } catch (err) {
-                clearTimeout(timeoutId);
                 console.error(`[COMPRESSION ERROR]`, err);
-                
-                let displayMsg = err.message;
-                if (err.name === 'AbortError') {
-                    displayMsg = 'Request timed out. The file might be too large or complex for the server.';
-                }
-
                 if (statusDiv) {
                     statusDiv.classList.remove('hidden');
-                    statusDiv.textContent = `Error: ${displayMsg}`;
+                    statusDiv.textContent = `Error: ${err.message}`;
                     statusDiv.style.color = '#dc3545';
                 }
-                alert(displayMsg);
+                alert(err.message);
             }
         });
     }
