@@ -71,27 +71,36 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Dynamically load PDF.js for client-side PDF rendering & precise compression
-    async function loadPdfJs() {
-        if (window.pdfjsLib) return window.pdfjsLib;
-        return new Promise((resolve, reject) => {
-            const script = document.createElement('script');
-            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-            script.onload = () => {
-                window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-                resolve(window.pdfjsLib);
-            };
-            script.onerror = reject;
-            document.head.appendChild(script);
-        });
+    async function loadLibraries() {
+        if (!window.pdfjsLib) {
+            await new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+                script.onload = () => {
+                    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+                    resolve();
+                };
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
+        }
+        if (!window.PDFLib) {
+            await new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = 'https://unpkg.com/pdf-lib@1.4.0/dist/pdf-lib.min.js';
+                script.onload = resolve;
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
+        }
     }
 
     async function renderPdfToCanvas(file) {
-        const pdfjsLib = await loadPdfJs();
+        await loadLibraries();
         const arrayBuffer = await file.arrayBuffer();
-        const loadingTask = pdfjsLib.getDocument({ data: arrayBuffer });
+        const loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });
         const pdfDoc = await loadingTask.promise;
-        const page = await pdfDoc.getPage(1); // Render first page of certificate/document
+        const page = await pdfDoc.getPage(1);
         
         let viewport = page.getViewport({ scale: 2.0 });
         const canvas = document.createElement('canvas');
@@ -107,7 +116,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return new Promise(resolve => canvas.toBlob(resolve, mimeType, quality));
     }
 
-    // Precision Binary Search Compressor for both Images and PDFs
     async function compressFileClientSide(file, targetSizeKB, format) {
         const targetBytes = targetSizeKB * 1024;
         const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
@@ -137,26 +145,27 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         let mimeType = 'image/jpeg';
-        let ext = 'jpg';
+        let ext = isPdf ? 'pdf' : 'jpg';
 
-        if (format === 'png' || (!isPdf && file.type === 'image/png')) {
-            mimeType = 'image/png';
-            ext = 'png';
-        } else if (format === 'webp') {
-            mimeType = 'image/webp';
-            ext = 'webp';
-        } else if (format === 'avif') {
-            mimeType = 'image/avif';
-            ext = 'avif';
-        } else if (isPdf || format === 'auto') {
-            mimeType = 'image/jpeg';
-            ext = 'jpg';
+        if (!isPdf) {
+            if (format === 'png' || file.type === 'image/png') {
+                mimeType = 'image/png';
+                ext = 'png';
+            } else if (format === 'webp') {
+                mimeType = 'image/webp';
+                ext = 'webp';
+            } else if (format === 'avif') {
+                mimeType = 'image/avif';
+                ext = 'avif';
+            } else {
+                mimeType = 'image/jpeg';
+                ext = 'jpg';
+            }
         }
 
         let scale = 1.0;
         let bestBlob = null;
 
-        // Binary search on quality to zero in precisely on target size
         for (let attempt = 0; attempt < 8; attempt++) {
             let currentWidth = Math.max(100, Math.round(canvas.width * scale));
             let currentHeight = Math.max(100, Math.round(canvas.height * scale));
@@ -167,7 +176,7 @@ document.addEventListener('DOMContentLoaded', () => {
             let tempCtx = tempCanvas.getContext('2d');
             tempCtx.drawImage(canvas, 0, 0, currentWidth, currentHeight);
 
-            if (mimeType === 'image/png') {
+            if (mimeType === 'image/png' && !isPdf) {
                 const blob = await getBlobWithQuality(tempCanvas, mimeType, 1.0);
                 if (blob) {
                     bestBlob = blob;
@@ -182,7 +191,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 let optimalBlob = null;
 
                 let maxBlob = await getBlobWithQuality(tempCanvas, mimeType, high);
-                if (maxBlob && maxBlob.size <= targetBytes) {
+                if (maxBlob && maxBlob.size <= targetBytes && !isPdf) {
                     return { blob: maxBlob, ext };
                 }
 
@@ -193,21 +202,44 @@ document.addEventListener('DOMContentLoaded', () => {
                     if (candidateBlob) {
                         if (candidateBlob.size <= targetBytes) {
                             optimalBlob = candidateBlob;
-                            low = mid; // Try higher quality to get as close to target as possible
+                            low = mid;
                         } else {
-                            high = mid; // Too large, lower quality
+                            high = mid;
                         }
                     }
                 }
 
                 if (optimalBlob) {
-                    return { blob: optimalBlob, ext };
+                    bestBlob = optimalBlob;
+                    if (!isPdf) return { blob: bestBlob, ext };
+                    break;
                 } else {
                     bestBlob = await getBlobWithQuality(tempCanvas, mimeType, low);
                 }
             }
 
             scale *= 0.80;
+        }
+
+        // If it's a PDF, wrap the compressed image back into a clean PDF container using pdf-lib
+        if (isPdf && bestBlob) {
+            await loadLibraries();
+            const pdfDoc = await window.PDFLib.PDFDocument.create();
+            const page = pdfDoc.addPage([canvas.width, canvas.height]);
+            
+            const imageBytes = await bestBlob.arrayBuffer();
+            const embeddedImage = await pdfDoc.embedJpg(imageBytes);
+            
+            page.drawImage(embeddedImage, {
+                x: 0,
+                y: 0,
+                width: canvas.width,
+                height: canvas.height,
+            });
+
+            const pdfBytes = await pdfDoc.save();
+            const finalPdfBlob = new Blob([pdfBytes], { type: 'application/pdf' });
+            return { blob: finalPdfBlob, ext: 'pdf' };
         }
 
         return { blob: bestBlob || file, ext };
