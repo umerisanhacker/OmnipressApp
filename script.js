@@ -19,7 +19,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Make clicking the drop zone open the file explorer reliably
     dropZone.addEventListener('click', (e) => {
-        // If the user clicked the remove button, do not trigger file picker
         if (e.target.closest('#cancelBtn')) return;
         fileInput.click();
     });
@@ -42,16 +41,15 @@ document.addEventListener('DOMContentLoaded', () => {
         if (statusDiv) {
             statusDiv.classList.add('hidden');
         }
-        console.log(`[UI SUCCESS] File loaded: ${file.name}`);
     }
 
     // Handle remove/cancel file button
     if (cancelBtn) {
         cancelBtn.addEventListener('click', (e) => {
-            e.stopPropagation(); // Prevent opening file picker again
+            e.stopPropagation();
 
             selectedFile = null;
-            fileInput.value = ''; // Reset input
+            fileInput.value = '';
 
             if (previewContainer) previewContainer.classList.add('hidden');
             if (dropZonePrompt) dropZonePrompt.classList.remove('hidden');
@@ -59,7 +57,6 @@ document.addEventListener('DOMContentLoaded', () => {
             if (statusDiv) {
                 statusDiv.classList.add('hidden');
             }
-            console.log(`[UI] File removed.`);
         });
     }
 
@@ -79,7 +76,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Handle compression request submission
+    // Handle compression request submission with robust error handling and correct extension mapping
     if (compressBtn) {
         compressBtn.addEventListener('click', async () => {
             if (!selectedFile) {
@@ -89,7 +86,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const formData = new FormData();
             formData.append('file', selectedFile);
-            formData.append('outputFormat', formatSelect ? formatSelect.value : 'auto');
+            
+            const chosenFormat = formatSelect ? formatSelect.value : 'auto';
+            formData.append('outputFormat', chosenFormat);
             formData.append('targetSize', targetSizeInput ? targetSizeInput.value : '1500');
 
             if (statusDiv) {
@@ -98,11 +97,18 @@ document.addEventListener('DOMContentLoaded', () => {
                 statusDiv.style.color = '#007bff';
             }
 
+            // Set up a 90-second timeout controller so the UI never hangs indefinitely
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 90000);
+
             try {
                 const response = await fetch('/api/compress/universal', {
                     method: 'POST',
-                    body: formData
+                    body: formData,
+                    signal: controller.signal
                 });
+
+                clearTimeout(timeoutId);
 
                 if (!response.ok) {
                     let errorMessage = 'Compression failed on server.';
@@ -115,9 +121,20 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const blob = await response.blob();
                 const downloadUrl = window.URL.createObjectURL(blob);
+                
+                // Dynamically determine correct file extension based on user selection
+                let outputExtension = selectedFile.name.split('.').pop();
+                if (chosenFormat && chosenFormat !== 'auto') {
+                    outputExtension = chosenFormat;
+                }
+                const baseName = selectedFile.name.includes('.') 
+                    ? selectedFile.name.substring(0, selectedFile.name.lastIndexOf('.')) 
+                    : selectedFile.name;
+                const finalDownloadName = `${baseName}.${outputExtension}`;
+
                 const a = document.createElement('a');
                 a.href = downloadUrl;
-                a.download = selectedFile.name;
+                a.download = finalDownloadName;
                 document.body.appendChild(a);
                 a.click();
                 a.remove();
@@ -128,13 +145,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     statusDiv.style.color = '#28a745';
                 }
             } catch (err) {
+                clearTimeout(timeoutId);
                 console.error(`[COMPRESSION ERROR]`, err);
+                
+                let displayMsg = err.message;
+                if (err.name === 'AbortError') {
+                    displayMsg = 'Request timed out. The file might be too large or complex for the server.';
+                }
+
                 if (statusDiv) {
                     statusDiv.classList.remove('hidden');
-                    statusDiv.textContent = `Error: ${err.message}`;
+                    statusDiv.textContent = `Error: ${displayMsg}`;
                     statusDiv.style.color = '#dc3545';
                 }
-                alert(err.message);
+                alert(displayMsg);
             }
         });
     }
