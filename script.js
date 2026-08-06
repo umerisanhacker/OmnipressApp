@@ -71,6 +71,18 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     async function loadLibraries() {
+        if (!window.pdfjsLib) {
+            await new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+                script.onload = () => {
+                    window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+                    resolve();
+                };
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
+        }
         if (!window.PDFLib) {
             await new Promise((resolve, reject) => {
                 const script = document.createElement('script');
@@ -82,58 +94,47 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function compressImageToTargetObject(img, targetBytes, mimeType, originalExt) {
+    // THE RELENTLESS TARGETING ENGINE
+    async function compressImageToTargetObject(img, targetBytes, mimeType, originalExt, isDocument = false) {
+        let bestBlob = null;
+        
+        // Start documents at 1.4x scale for clarity, standard images at 1.0x
+        let scale = isDocument ? 1.4 : 1.0; 
+        const minQuality = 0.10; // We will go deep into JPEG compression before ruining resolution
+        
         let canvas = document.createElement('canvas');
         let ctx = canvas.getContext('2d');
-        
-        let width = img.width;
-        let height = img.height;
-        canvas.width = width;
-        canvas.height = height;
-        
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(0, 0, width, height);
-        ctx.drawImage(img, 0, 0, width, height);
 
-        let bestBlob = null;
-        let currentQuality = 0.90;
+        // Loop until we mathematically force the file below the target bytes
+        while (scale >= 0.25) { 
+            let targetW = Math.round(img.width * scale);
+            let targetH = Math.round(img.height * scale);
+            canvas.width = targetW;
+            canvas.height = targetH;
+            
+            // Solid white background is crucial for docs to avoid massive black transparent artifacts
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(0, 0, targetW, targetH);
+            ctx.drawImage(img, 0, 0, targetW, targetH);
 
-        // Phase 1: High-clarity, aggressive quality reduction
-        while (currentQuality >= 0.35) {
-            let blob = await new Promise(res => canvas.toBlob(res, mimeType, currentQuality));
-            if (blob) {
+            let currentQuality = 0.85;
+            
+            while (currentQuality >= minQuality) {
+                let blob = await new Promise(res => canvas.toBlob(res, 'image/jpeg', currentQuality));
                 bestBlob = blob;
+                
                 if (blob.size <= targetBytes) {
-                    break;
+                    return { blob: bestBlob, ext: originalExt }; // Target Hit. Exit loop.
                 }
+                // Drop quality in aggressive chunks to save resolution
+                currentQuality -= 0.15; 
             }
-            currentQuality -= 0.05;
+            
+            // If lowest quality STILL missed the target, we have no choice but to shrink physical dimensions.
+            scale -= 0.20; 
         }
 
-        // Phase 2: Gentle scaling only if absolutely needed
-        if (bestBlob && bestBlob.size > targetBytes) {
-            let scale = 0.95;
-            for (let i = 0; i < 5; i++) {
-                if (scale < 0.50) break;
-                
-                let targetW = Math.round(width * scale);
-                let targetH = Math.round(height * scale);
-                canvas.width = targetW;
-                canvas.height = targetH;
-                
-                ctx.fillStyle = '#ffffff';
-                ctx.fillRect(0, 0, targetW, targetH);
-                ctx.drawImage(img, 0, 0, targetW, targetH);
-
-                let blob = await new Promise(res => canvas.toBlob(res, mimeType, 0.60));
-                if (blob) {
-                    bestBlob = blob;
-                    if (blob.size <= targetBytes) break;
-                }
-                scale -= 0.1;
-            }
-        }
-
+        // If we exhausted every possible drop, return the absolute smallest it could mathematically get
         return { blob: bestBlob || img, ext: originalExt };
     }
 
@@ -146,32 +147,73 @@ document.addEventListener('DOMContentLoaded', () => {
 
         if (isPdf) {
             try {
-                if (statusCallback) statusCallback('Optimizing PDF structure (Preserving 100% Vector Clarity)...');
                 const arrayBuffer = await file.arrayBuffer();
+                const pdfDoc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+                const numPages = pdfDoc.numPages;
                 
-                // Natively load the PDF without turning it into a blurry image
-                const pdfDoc = await window.PDFLib.PDFDocument.load(arrayBuffer, { ignoreEncryption: true });
+                // Reserve 8% of the target size for PDF wrapper/metadata overhead
+                const safeTargetBytes = targetBytes * 0.92; 
+                const targetBytesPerPage = Math.floor(safeTargetBytes / numPages);
+                
+                if (statusCallback) statusCallback(`Strict Allocation: ~${Math.round(targetBytesPerPage/1024)}KB per page...`);
+                
+                const newPdfDoc = await window.PDFLib.PDFDocument.create();
 
-                // Re-save using native object stream compression to strip bloat
-                const pdfBytes = await pdfDoc.save({ useObjectStreams: true });
-                let finalBlob = new Blob([pdfBytes], { type: 'application/pdf' });
-                
-                // Absolute guardrail: If the "compressed" version is bigger, revert to original
-                if (finalBlob.size >= file.size) {
-                    console.log("Native compression did not yield smaller size. Using original to prevent bloat.");
-                    finalBlob = file;
+                for (let i = 1; i <= numPages; i++) {
+                    if (statusCallback) {
+                        const percent = Math.round((i / numPages) * 100);
+                        statusCallback(`Forcing Target Size: Processing page ${i}/${numPages} (${percent}%)`);
+                    }
+
+                    const page = await pdfDoc.getPage(i);
+                    // Start render at base 1.0. The Relentless Engine will upscale/downscale it.
+                    let viewport = page.getViewport({ scale: 1.0 }); 
+                    
+                    let canvas = document.createElement('canvas');
+                    let ctx = canvas.getContext('2d');
+                    canvas.height = viewport.height;
+                    canvas.width = viewport.width;
+                    
+                    await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+
+                    let img = new Image();
+                    img.src = canvas.toDataURL('image/jpeg', 1.0);
+                    await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
+
+                    // Execute the relentless compressor
+                    let result = await compressImageToTargetObject(img, targetBytesPerPage, 'image/jpeg', 'jpg', true);
+                    
+                    const imageBytes = await result.blob.arrayBuffer();
+                    const embeddedImage = await newPdfDoc.embedJpg(imageBytes);
+                    
+                    const origViewport = page.getViewport({ scale: 1.0 });
+                    const newPage = newPdfDoc.addPage([origViewport.width, origViewport.height]);
+                    newPage.drawImage(embeddedImage, {
+                        x: 0,
+                        y: 0,
+                        width: origViewport.width,
+                        height: origViewport.height,
+                    });
+
+                    // Aggressive memory cleanup to prevent browser crash on heavy books
+                    page.cleanup();
+                    canvas.width = 0;
+                    canvas.height = 0;
+                    img.src = '';
+                    img = null;
+
+                    // Brief pause to keep the UI from locking up completely
+                    if (i % 3 === 0) {
+                        await new Promise(r => setTimeout(r, 5)); 
+                    }
                 }
 
-                // If it's still way over the target size, route it to the server for ZIP archiving
-                if (finalBlob.size > targetBytes * 1.5) {
-                    throw new Error("SERVER_FALLBACK");
-                }
-
-                if (statusCallback) statusCallback('Finalizing perfect-clarity document...');
-                return { blob: finalBlob, ext: 'pdf' };
+                if (statusCallback) statusCallback('Finalizing strict file size packaging...');
+                const pdfBytes = await newPdfDoc.save();
+                return { blob: new Blob([pdfBytes], { type: 'application/pdf' }), ext: 'pdf' };
 
             } catch (pdfErr) {
-                console.warn("[PDF FALLBACK] Routing to server archiver:", pdfErr);
+                console.warn("[PDF CRITICAL] Client parsing failed, routing to server:", pdfErr);
                 throw new Error("SERVER_FALLBACK");
             }
         } else if (isImage) {
@@ -185,7 +227,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     img.src = event.target.result;
                     img.onload = async () => {
                         try {
-                            const res = await compressImageToTargetObject(img, targetBytes, mimeType, extName);
+                            const res = await compressImageToTargetObject(img, targetBytes, mimeType, extName, false);
                             resolve(res);
                         } catch (err) {
                             reject(err);
@@ -213,7 +255,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (statusDiv) {
                 statusDiv.classList.remove('hidden');
-                statusDiv.textContent = 'Initializing optimization...';
+                statusDiv.textContent = 'Initializing precision optimization...';
                 statusDiv.style.color = '#007bff';
             }
 
@@ -233,7 +275,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         finalExt = result.ext;
                     } catch (clientErr) {
                         if (clientErr.message === "SERVER_FALLBACK") {
-                            updateStatus('Document cannot be structurally shrunk further. Zipping via server...');
+                            updateStatus('Pushing to server fallback engine...');
                             const formData = new FormData();
                             formData.append('file', selectedFile);
                             formData.append('targetSize', targetSizeVal);
@@ -253,7 +295,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             }
 
                             blob = await response.blob();
-                            finalExt = 'zip'; // Server fallback for documents returns ZIP
+                            finalExt = extName; 
                         } else {
                             throw clientErr;
                         }
@@ -279,7 +321,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
 
                     blob = await response.blob();
-                    finalExt = extName; // Server media routing keeps ext
+                    finalExt = extName; 
                 }
 
                 const downloadUrl = window.URL.createObjectURL(blob);
@@ -297,7 +339,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 window.URL.revokeObjectURL(downloadUrl);
 
                 if (statusDiv) {
-                    statusDiv.textContent = `Success! Downloaded file size: ~${Math.round(blob.size / 1024)} KB.`;
+                    const finalSizeKB = Math.round(blob.size / 1024);
+                    statusDiv.textContent = `Success! Downloaded file size: ~${finalSizeKB} KB (Target: ${targetSizeVal} KB).`;
                     statusDiv.style.color = '#28a745';
                 }
             } catch (err) {
