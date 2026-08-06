@@ -47,63 +47,13 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
     const targetSizeKB = parseInt(req.body.targetSize) || 1500;
     const originalName = sanitizeFilename(req.file.originalname);
     const ext = originalName.split('.').pop().toLowerCase();
-    const targetSizeBytes = targetSizeKB * 1024;
     const uniqueId = `${Date.now()}_${Math.round(Math.random() * 1e9)}`;
     
     console.log(`[ROUTER] File: ${originalName} | Type: ${mimeType} | Target: ${targetSizeKB}KB | Format: ${requestedFormat}`);
 
     try {
-        // --- PDF & DOCUMENT ROUTING (Strict Target Size Enforcement via Rendering & Compression) ---
-        if (mimeType === 'application/pdf' || ext === 'pdf') {
-            console.log(`[ROUTER] Routing PDF to Sharp Engine for strict target size reduction...`);
-            
-            let quality = 85;
-            let scale = 1.0;
-            let compressedBuffer;
-            let outputExtension = requestedFormat === 'auto' ? 'pdf' : requestedFormat;
-
-            // Render PDF page 0 as image pipeline for deep compression
-            while (true) {
-                let imagePipeline = sharp(req.file.buffer, { page: 0, density: Math.round(150 * scale) });
-
-                if (outputExtension === 'png') {
-                    imagePipeline = imagePipeline.png({ quality: 8, force: true });
-                    outputExtension = 'png';
-                } else if (outputExtension === 'webp') {
-                    imagePipeline = imagePipeline.webp({ quality: quality, force: true });
-                    outputExtension = 'webp';
-                } else if (outputExtension === 'avif') {
-                    imagePipeline = imagePipeline.avif({ quality: quality, force: true });
-                    outputExtension = 'avif';
-                } else {
-                    imagePipeline = imagePipeline.jpeg({ quality: quality, force: true });
-                    outputExtension = 'jpg';
-                }
-
-                compressedBuffer = await imagePipeline.toBuffer();
-
-                if (compressedBuffer.length <= targetSizeBytes || (quality <= 15 && scale <= 0.2)) {
-                    break;
-                }
-
-                if (quality > 25) {
-                    quality -= 20;
-                } else {
-                    scale -= 0.25;
-                    quality = 60;
-                }
-            }
-
-            console.log(`[SUCCESS] PDF compressed successfully to target size. Final size: ${Math.round(compressedBuffer.length/1024)}KB`);
-            const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
-            
-            res.set('Content-Disposition', `attachment; filename="OmniPress-${baseName}.${outputExtension}"`);
-            res.set('Content-Type', outputExtension === 'pdf' ? 'application/pdf' : `image/${outputExtension === 'jpg' ? 'jpeg' : outputExtension}`);
-            return res.send(compressedBuffer);
-        }
-
         // --- VIDEO & AUDIO ROUTING ---
-        else if (mimeType.startsWith('video/') || mimeType.startsWith('audio/') || ['mp4', 'mov', 'mp3', 'mkv', 'avi'].includes(ext)) {
+        if (mimeType.startsWith('video/') || mimeType.startsWith('audio/') || ['mp4', 'mov', 'mp3', 'mkv', 'avi'].includes(ext)) {
             console.log(`[ROUTER] Routing to FFmpeg Media Engine...`);
             
             const tempInputPath = path.join(os.tmpdir(), `temp_in_${uniqueId}_${originalName}`);
@@ -174,7 +124,7 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
                 const finalExt = isMp3 ? 'mp3' : 'mp4';
 
                 res.set('Content-Disposition', `attachment; filename="OmniPress-${baseName}.${finalExt}"`);
-                res.set('Content-Type', isMp3 ? 'audio/mpeg' : 'video/mp4');
+                res.set('Content-Type', finalExt === 'mp3' ? 'audio/mpeg' : 'video/mp4');
                 return res.send(processedBuffer);
 
             } finally {
@@ -183,7 +133,7 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
             }
         }
         
-        // --- OTHER DOCUMENTS ROUTING (ZIP Compression) ---
+        // --- DOCUMENTS & PDFS ROUTING (Safe ZIP Archive Compression) ---
         else {
             console.log(`[ROUTER] Routing to Document & Archive Engine...`);
             const tempInputPath = path.join(os.tmpdir(), `temp_doc_${uniqueId}_${originalName}`);
