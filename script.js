@@ -94,7 +94,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function compressImageToTargetObject(img, targetBytes, mimeType, originalExt) {
+    // UPDATED: isDocument flag strictly protects text from dimension scaling
+    async function compressImageToTargetObject(img, targetBytes, mimeType, originalExt, isDocument = false) {
         let canvas = document.createElement('canvas');
         let ctx = canvas.getContext('2d');
         
@@ -102,12 +103,20 @@ document.addEventListener('DOMContentLoaded', () => {
         let height = img.height;
         canvas.width = width;
         canvas.height = height;
+        
+        // Fill white background to avoid transparent black-box issues in JPEG
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, width, height);
         ctx.drawImage(img, 0, 0, width, height);
 
         let bestBlob = null;
         let currentQuality = 0.90;
+        
+        // Documents text relies on resolution, not JPEG quality. We can drop quality heavily.
+        const minQuality = isDocument ? 0.25 : 0.35;
 
-        while (currentQuality >= 0.30) {
+        // Phase 1: High-clarity, aggressive quality reduction (leaves vectors sharp)
+        while (currentQuality >= minQuality) {
             let blob = await new Promise(res => canvas.toBlob(res, mimeType, currentQuality));
             if (blob) {
                 bestBlob = blob;
@@ -118,17 +127,25 @@ document.addEventListener('DOMContentLoaded', () => {
             currentQuality -= 0.05;
         }
 
+        // Phase 2: Gentle scaling ONLY if absolutely needed. Documents resist this heavily.
         if (bestBlob && bestBlob.size > targetBytes) {
-            let scale = 0.85;
-            for (let i = 0; i < 3; i++) {
+            let scale = 0.95;
+            const minScale = isDocument ? 0.70 : 0.50; // Protect text dimensions
+            const maxSteps = isDocument ? 3 : 5;
+            
+            for (let i = 0; i < maxSteps; i++) {
+                if (scale < minScale) break;
+                
                 let targetW = Math.round(width * scale);
                 let targetH = Math.round(height * scale);
                 canvas.width = targetW;
                 canvas.height = targetH;
-                ctx.clearRect(0, 0, targetW, targetH);
+                
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, targetW, targetH);
                 ctx.drawImage(img, 0, 0, targetW, targetH);
 
-                let blob = await new Promise(res => canvas.toBlob(res, mimeType, 0.60));
+                let blob = await new Promise(res => canvas.toBlob(res, mimeType, isDocument ? 0.30 : 0.60));
                 if (blob) {
                     bestBlob = blob;
                     if (blob.size <= targetBytes) break;
@@ -153,17 +170,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 const pdfDoc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
                 const numPages = pdfDoc.numPages;
                 
-                // Dynamically calculate render scale based on target vs original file size ratio
-                const compressionRatio = targetBytes / file.size;
-                const renderScale = Math.min(1.0, Math.max(0.45, Math.sqrt(compressionRatio)));
+                // THE CLARITY FIX: Hard-lock supersampled resolution to keep text crisp.
+                const renderScale = 1.6; 
                 
-                const targetBytesPerPage = Math.max(8192, Math.floor(targetBytes / numPages));
+                // Set a floor of ~12KB per page. Below this, physics dictates text becomes unreadable.
+                const targetBytesPerPage = Math.max(12288, Math.floor((targetBytes * 0.9) / numPages));
                 const newPdfDoc = await window.PDFLib.PDFDocument.create();
 
                 for (let i = 1; i <= numPages; i++) {
                     if (statusCallback) {
                         const percent = Math.round((i / numPages) * 100);
-                        statusCallback(`Optimizing PDF: Page ${i} of ${numPages} (${percent}%)`);
+                        statusCallback(`Enhancing Clarity & Optimizing PDF: Page ${i} of ${numPages} (${percent}%)`);
                     }
 
                     const page = await pdfDoc.getPage(i);
@@ -173,17 +190,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     let ctx = canvas.getContext('2d');
                     canvas.height = viewport.height;
                     canvas.width = viewport.width;
+                    
                     await page.render({ canvasContext: ctx, viewport: viewport }).promise;
 
                     let img = new Image();
-                    img.src = canvas.toDataURL('image/jpeg', 0.85);
+                    img.src = canvas.toDataURL('image/jpeg', 1.0);
                     await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
 
-                    let result = await compressImageToTargetObject(img, targetBytesPerPage, 'image/jpeg', 'jpg');
+                    // Pass `true` for `isDocument` to trigger clarity-protection logic
+                    let result = await compressImageToTargetObject(img, targetBytesPerPage, 'image/jpeg', 'jpg', true);
                     
                     const imageBytes = await result.blob.arrayBuffer();
                     const embeddedImage = await newPdfDoc.embedJpg(imageBytes);
                     
+                    // Stamp back onto original exact physical page dimensions
                     const origViewport = page.getViewport({ scale: 1.0 });
                     const newPage = newPdfDoc.addPage([origViewport.width, origViewport.height]);
                     newPage.drawImage(embeddedImage, {
@@ -193,12 +213,19 @@ document.addEventListener('DOMContentLoaded', () => {
                         height: origViewport.height,
                     });
 
-                    if (i % 4 === 0) {
-                        await new Promise(r => setTimeout(r, 5));
+                    // MEMORY CRASH PROTECTION: Destroy heavy canvas/image data immediately for massive PDFs
+                    page.cleanup();
+                    canvas.width = 0;
+                    canvas.height = 0;
+                    img.src = '';
+                    img = null;
+
+                    if (i % 3 === 0) {
+                        await new Promise(r => setTimeout(r, 10)); 
                     }
                 }
 
-                if (statusCallback) statusCallback('Finalizing targeted file size packaging...');
+                if (statusCallback) statusCallback('Finalizing high-clarity document packaging...');
                 const pdfBytes = await newPdfDoc.save();
                 return { blob: new Blob([pdfBytes], { type: 'application/pdf' }), ext: 'pdf' };
             } catch (pdfErr) {
@@ -216,7 +243,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     img.src = event.target.result;
                     img.onload = async () => {
                         try {
-                            const res = await compressImageToTargetObject(img, targetBytes, mimeType, extName);
+                            const res = await compressImageToTargetObject(img, targetBytes, mimeType, extName, false);
                             resolve(res);
                         } catch (err) {
                             reject(err);
