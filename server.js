@@ -17,7 +17,9 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'frontend')));
+
+// FIX: Serve static files from the root directory where index.html resides
+app.use(express.static(__dirname));
 
 const storage = multer.memoryStorage();
 const upload = multer({ 
@@ -183,7 +185,6 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
                 return res.send(processedBuffer);
 
             } finally {
-                // Guaranteed cleanup of temporary files
                 if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
                 if (fs.existsSync(tempOutputPath)) fs.unlinkSync(tempOutputPath);
             }
@@ -220,7 +221,6 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
                 return res.send(zippedBuffer);
 
             } finally {
-                // Guaranteed cleanup of temporary files
                 if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
                 if (fs.existsSync(archivePath)) fs.unlinkSync(archivePath);
             }
