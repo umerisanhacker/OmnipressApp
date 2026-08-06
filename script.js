@@ -71,7 +71,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Helper: Instant client-side compression for images using HTML5 Canvas
+    // Advanced Multi-Pass Client-Side Image Compressor to hit strict Target KB
     async function compressImageClientSide(file, targetSizeKB, format) {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
@@ -79,29 +79,11 @@ document.addEventListener('DOMContentLoaded', () => {
             reader.onload = (event) => {
                 const img = new Image();
                 img.src = event.target.result;
-                img.onload = () => {
-                    const canvas = document.createElement('canvas');
+                img.onload = async () => {
+                    const targetBytes = targetSizeKB * 1024;
                     let width = img.width;
                     let height = img.height;
-
-                    // Scale down dimensions if image is extremely large to hit target size faster
-                    const maxDim = 2000;
-                    if (width > maxDim || height > maxDim) {
-                        if (width > height) {
-                            height = Math.round((height * maxDim) / width);
-                            width = maxDim;
-                        } else {
-                            width = Math.round((width * maxDim) / height);
-                            height = maxDim;
-                        }
-                    }
-
-                    canvas.width = width;
-                    canvas.height = height;
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(img, 0, 0, width, height);
-
-                    // Determine output MIME type
+                    
                     let mimeType = 'image/jpeg';
                     let ext = 'jpg';
                     if (format === 'png' || file.type === 'image/png') {
@@ -115,26 +97,47 @@ document.addEventListener('DOMContentLoaded', () => {
                         ext = 'avif';
                     }
 
-                    // Iteratively reduce quality to approximate target size instantly
-                    let quality = 0.9;
-                    const targetBytes = targetSizeKB * 1024;
+                    let canvas = document.createElement('canvas');
+                    let ctx = canvas.getContext('2d');
 
-                    const attemptCompression = () => {
+                    let scale = 1.0;
+                    let bestBlob = null;
+
+                    // If file is already smaller than target, keep original
+                    if (file.size <= targetBytes) {
+                        canvas.width = width;
+                        canvas.height = height;
+                        ctx.drawImage(img, 0, 0, width, height);
                         canvas.toBlob((blob) => {
-                            if (!blob) {
-                                reject(new Error('Canvas compression failed.'));
-                                return;
-                            }
-                            if (blob.size <= targetBytes || quality <= 0.1 || mimeType === 'image/png') {
-                                resolve({ blob, ext });
-                            } else {
-                                quality -= 0.15;
-                                attemptCompression();
-                            }
-                        }, mimeType, quality);
-                    };
+                            resolve({ blob: blob || file, ext });
+                        }, mimeType, 0.9);
+                        return;
+                    }
 
-                    attemptCompression();
+                    // Iteratively scale down dimensions and reduce quality until we hit the target size
+                    for (let attempt = 0; attempt < 6; attempt++) {
+                        let currentWidth = Math.max(80, Math.round(width * scale));
+                        let currentHeight = Math.max(80, Math.round(height * scale));
+                        
+                        canvas.width = currentWidth;
+                        canvas.height = currentHeight;
+                        ctx.clearRect(0, 0, currentWidth, currentHeight);
+                        ctx.drawImage(img, 0, 0, currentWidth, currentHeight);
+
+                        for (let q = 0.85; q >= 0.1; q -= 0.15) {
+                            const blob = await new Promise(res => canvas.toBlob(res, mimeType, q));
+                            if (blob) {
+                                bestBlob = blob;
+                                if (blob.size <= targetBytes) {
+                                    resolve({ blob, ext });
+                                    return;
+                                }
+                            }
+                        }
+                        scale *= 0.65; // Aggressively scale down dimensions if still too large
+                    }
+
+                    resolve({ blob: bestBlob || file, ext });
                 };
                 img.onerror = (err) => reject(err);
             };
@@ -162,13 +165,11 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 let blob, finalExt;
 
-                // If it's an image, process it instantly in the browser client-side!
                 if (isImage) {
                     const result = await compressImageClientSide(selectedFile, targetSizeVal, chosenFormat);
                     blob = result.blob;
                     finalExt = result.ext;
                 } else {
-                    // Fallback to server for videos, PDFs, and documents
                     const formData = new FormData();
                     formData.append('file', selectedFile);
                     formData.append('outputFormat', chosenFormat);
