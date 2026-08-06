@@ -9,6 +9,7 @@ const archiver = require('archiver');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execSync } = require('child_process');
 
 sharp.concurrency(0);
 
@@ -44,7 +45,6 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
 
     const mimeType = req.file.mimetype;
     const targetSizeKB = parseInt(req.body.targetSize) || 1500;
-    const targetBytes = targetSizeKB * 1024;
     const originalName = sanitizeFilename(req.file.originalname);
     const ext = originalName.split('.').pop().toLowerCase();
     const uniqueId = `${Date.now()}_${Math.round(Math.random() * 1e9)}`;
@@ -52,18 +52,64 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
     console.log(`[ROUTER] File: ${originalName} | Type: ${mimeType} | Target: ${targetSizeKB}KB`);
 
     try {
+        // --- HIGH-CLARITY PDF ROUTING (Ghostscript Engine via Render Linux) ---
+        if (mimeType === 'application/pdf' || ext === 'pdf') {
+            console.log(`[ROUTER] Routing to Server-Side Ghostscript PDF Vector Engine...`);
+            const tempInputPath = path.join(os.tmpdir, `temp_pdf_in_${uniqueId}.pdf`);
+            const tempOutputPath = path.join(os.tmpdir, `temp_pdf_out_${uniqueId}.pdf`);
+
+            fs.writeFileSync(tempInputPath, req.file.buffer);
+
+            try {
+                // Calculate appropriate PDF screen/ebook resolution profile based on target size aggressiveness
+                let pdfSetting = '/ebook'; // ~150 dpi balance
+                if (targetSizeKB < 1000) {
+                    pdfSetting = '/screen'; // ~72 dpi for ultra-small targets
+                } else if (targetSizeKB > 4000) {
+                    pdfSetting = '/printer'; // higher quality preset
+                }
+
+                // Execute Ghostscript command natively available on Render
+                const gsCommand = `gs -sDEVICE=pdfwrite -dCompatibilityLevel=1.4 -dPDFSETTINGS=${pdfSetting} -dNOPAUSE -dQUIET -dBATCH -sOutputFile="${tempOutputPath}" "${tempInputPath}"`;
+                
+                console.log(`[GS EXEC] Running: ${gsCommand}`);
+                execSync(gsCommand);
+
+                if (fs.existsSync(tempOutputPath)) {
+                    const processedBuffer = fs.readFileSync(tempOutputPath);
+                    console.log(`[SUCCESS] PDF vector compressed via Ghostscript. Final size: ${Math.round(processedBuffer.length / 1024)}KB`);
+
+                    const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
+                    res.set('Content-Disposition', `attachment; filename="OmniPress-${baseName}.pdf"`);
+                    res.set('Content-Type', 'application/pdf');
+                    return res.send(processedBuffer);
+                } else {
+                    throw new Error("Ghostscript output file missing.");
+                }
+            } catch (gsErr) {
+                console.warn(`[GS WARNING] Ghostscript execution failed, falling back to clean structure save:`, gsErr.message);
+                // Fallback buffer if gs fails for any reason
+                res.set('Content-Disposition', `attachment; filename="OmniPress-${originalName}"`);
+                res.set('Content-Type', 'application/pdf');
+                return res.send(req.file.buffer);
+            } finally {
+                if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
+                if (fs.existsSync(tempOutputPath)) fs.unlinkSync(tempOutputPath);
+            }
+        }
+
         // --- HIGH-CLARITY IMAGE ROUTING (Sharp Engine) ---
-        if (mimeType.startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'avif'].includes(ext)) {
+        else if (mimeType.startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'avif'].includes(ext)) {
             console.log(`[ROUTER] Routing to Clarity-First Sharp Image Engine...`);
             let outputBuffer = null;
             let currentQuality = 92;
+            const targetBytes = targetSizeKB * 1024;
 
-            // Phase 1: Try reducing quality gradually while maintaining 100% original dimensions & aspect ratio
             while (currentQuality >= 35) {
                 let transformer = sharp(req.file.buffer);
                 if (ext === 'png' || mimeType === 'image/png') {
                     outputBuffer = await transformer.png({ compressionLevel: 9 }).toBuffer();
-                    break; // PNGs don't use lossy quality steps
+                    break;
                 } else if (ext === 'webp' || mimeType === 'image/webp') {
                     outputBuffer = await transformer.webp({ quality: currentQuality }).toBuffer();
                 } else if (ext === 'avif' || mimeType === 'image/avif') {
@@ -72,40 +118,11 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
                     outputBuffer = await transformer.jpeg({ quality: currentQuality, mozjpeg: true }).toBuffer();
                 }
 
-                if (outputBuffer.length <= targetBytes) {
-                    break;
-                }
-                currentQuality -= 4; // Fine-grained drops to preserve maximum clarity
+                if (outputBuffer.length <= targetBytes) break;
+                currentQuality -= 4;
             }
 
-            // Phase 2: If quality alone wasn't enough, gently scale down dimensions while strictly preserving aspect ratio
-            if (outputBuffer.length > targetBytes && ext !== 'png') {
-                let scale = 0.95;
-                for (let i = 0; i < 4; i++) {
-                    let transformer = sharp(req.file.buffer);
-                    const metadata = await transformer.metadata();
-                    let targetWidth = Math.round(metadata.width * scale);
-                    let targetHeight = Math.round(metadata.height * scale);
-
-                    transformer = transformer.resize(targetWidth, targetHeight, { 
-                        fit: 'inside', 
-                        withoutEnlargement: true 
-                    });
-
-                    if (ext === 'webp' || mimeType === 'image/webp') {
-                        outputBuffer = await transformer.webp({ quality: 60 }).toBuffer();
-                    } else if (ext === 'avif' || mimeType === 'image/avif') {
-                        outputBuffer = await transformer.avif({ quality: 60 }).toBuffer();
-                    } else {
-                        outputBuffer = await transformer.jpeg({ quality: 60, mozjpeg: true }).toBuffer();
-                    }
-
-                    if (outputBuffer.length <= targetBytes) break;
-                    scale -= 0.1;
-                }
-            }
-
-            console.log(`[SUCCESS] Image optimized with max clarity. Final size: ${Math.round(outputBuffer.length / 1024)}KB`);
+            console.log(`[SUCCESS] Image optimized. Final size: ${Math.round(outputBuffer.length / 1024)}KB`);
             const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
             
             res.set('Content-Disposition', `attachment; filename="OmniPress-${baseName}.${ext}"`);
@@ -116,10 +133,10 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
         // --- VIDEO & AUDIO ROUTING ---
         else if (mimeType.startsWith('video/') || mimeType.startsWith('audio/') || ['mp4', 'mov', 'mp3', 'mkv', 'avi'].includes(ext)) {
             console.log(`[ROUTER] Routing to FFmpeg Media Engine...`);
-            
-            const tempInputPath = path.join(os.tmpdir(), `temp_in_${uniqueId}_${originalName}`);
+            const targetBytes = targetSizeKB * 1024;
+            const tempInputPath = path.join(os.tmpdir, `temp_in_${uniqueId}_${originalName}`);
             const isMp3 = mimeType.startsWith('audio/') || ext === 'mp3';
-            const tempOutputPath = path.join(os.tmpdir(), `temp_out_${uniqueId}.${isMp3 ? 'mp3' : 'mp4'}`);
+            const tempOutputPath = path.join(os.tmpdir, `temp_out_${uniqueId}.${isMp3 ? 'mp3' : 'mp4'}`);
 
             fs.writeFileSync(tempInputPath, req.file.buffer);
 
@@ -132,49 +149,34 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
                         
                         if (!err && metadata && metadata.format && metadata.format.duration) {
                             const duration = metadata.format.duration;
-                            const targetBits = targetSizeKB * 1024 * 8;
+                            const targetBits = targetBytes * 8;
                             const totalBps = targetBits / duration;
-                            
                             const audioBps = Math.min(64 * 1024, Math.max(24 * 1024, totalBps * 0.25));
                             const videoBps = Math.max(64 * 1024, totalBps - audioBps);
                             
                             videoBitrateOpt = `${Math.max(64, Math.floor(videoBps / 1000))}k`;
                             audioBitrateOpt = `${Math.max(24, Math.floor(audioBps / 1000))}k`;
-                            
-                            if (targetSizeKB <= 1000) {
-                                scaleFilter = 'scale=480:-2';
-                            } else if (targetSizeKB <= 3000) {
-                                scaleFilter = 'scale=854:-2';
-                            } else {
-                                scaleFilter = 'scale=1280:-2';
-                            }
                         }
 
                         let command = ffmpeg(tempInputPath);
-
                         if (isMp3) {
                             command.audioCodec('libmp3lame').audioBitrate(audioBitrateOpt);
                         } else {
                             command.videoCodec('libx264')
                                    .audioCodec('aac')
-                                   .audioBitrate(audioBitrateOpt);
-
-                            const outputOpts = [
-                                `-b:v ${videoBitrateOpt}`,
-                                `-maxrate ${videoBitrateOpt}`,
-                                `-bufsize ${parseInt(videoBitrateOpt) * 2}k`,
-                                '-preset medium', // Better visual retention preset
-                                '-threads 0',
-                                `-vf ${scaleFilter}`
-                            ];
-
-                            command.outputOptions(outputOpts);
+                                   .audioBitrate(audioBitrateOpt)
+                                   .outputOptions([
+                                       `-b:v ${videoBitrateOpt}`,
+                                       `-maxrate ${videoBitrateOpt}`,
+                                       `-bufsize ${parseInt(videoBitrateOpt) * 2}k`,
+                                       '-preset medium',
+                                       '-threads 0',
+                                       `-vf ${scaleFilter}`
+                                   ]);
                         }
-
-                        command
-                            .save(tempOutputPath)
-                            .on('end', () => resolve())
-                            .on('error', (err) => reject(err));
+                        command.save(tempOutputPath)
+                               .on('end', () => resolve())
+                               .on('error', (err) => reject(err));
                     });
                 });
 
@@ -187,18 +189,17 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
                 res.set('Content-Disposition', `attachment; filename="OmniPress-${baseName}.${finalExt}"`);
                 res.set('Content-Type', finalExt === 'mp3' ? 'audio/mpeg' : 'video/mp4');
                 return res.send(processedBuffer);
-
             } finally {
                 if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
                 if (fs.existsSync(tempOutputPath)) fs.unlinkSync(tempOutputPath);
             }
         }
         
-        // --- DOCUMENTS & PDFS ROUTING ---
+        // --- OTHER DOCUMENTS ROUTING ---
         else {
-            console.log(`[ROUTER] Routing to Document & Archive Engine...`);
-            const tempInputPath = path.join(os.tmpdir(), `temp_doc_${uniqueId}_${originalName}`);
-            const archivePath = path.join(os.tmpdir(), `archive_${uniqueId}.zip`);
+            console.log(`[ROUTER] Routing to Archive Engine...`);
+            const tempInputPath = path.join(os.tmpdir, `temp_doc_${uniqueId}_${originalName}`);
+            const archivePath = path.join(os.tmpdir, `archive_${uniqueId}.zip`);
 
             fs.writeFileSync(tempInputPath, req.file.buffer);
 
@@ -215,14 +216,11 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
                 });
 
                 const zippedBuffer = fs.readFileSync(archivePath);
-                console.log(`[SUCCESS] Document compressed into ZIP archive. Size: ${Math.round(zippedBuffer.length/1024)}KB`);
-                
                 const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
 
                 res.set('Content-Disposition', `attachment; filename="OmniPress-${baseName}-compressed.zip"`);
                 res.set('Content-Type', 'application/zip');
                 return res.send(zippedBuffer);
-
             } finally {
                 if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
                 if (fs.existsSync(archivePath)) fs.unlinkSync(archivePath);
