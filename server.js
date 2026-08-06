@@ -7,6 +7,7 @@ const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
 const archiver = require('archiver');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 // Configure automatic bundled FFmpeg binaries
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
@@ -104,113 +105,125 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
         // --- ROUTE 2: VIDEOS & AUDIO (Strict Byte Limit & Resolution Scaling) ---
         else if (mimeType.startsWith('video/') || mimeType.startsWith('audio/') || ext === 'mp4' || ext === 'mov' || ext === 'mp3') {
             console.log(`[ROUTER] Routing to FFmpeg Media Engine with Strict Byte Limits...`);
-            const tempInputPath = path.join(__dirname, `temp_in_${Date.now()}_${originalName}`);
-            const tempOutputPath = path.join(__dirname, `temp_out_${Date.now()}.${requestedFormat === 'mp3' ? 'mp3' : 'mp4'}`);
+            
+            const uniqueId = `${Date.now()}_${Math.round(Math.random() * 1e9)}`;
+            const tempInputPath = path.join(os.tmpdir(), `temp_in_${uniqueId}_${originalName}`);
+            const tempOutputPath = path.join(os.tmpdir(), `temp_out_${uniqueId}.${requestedFormat === 'mp3' ? 'mp3' : 'mp4'}`);
 
             fs.writeFileSync(tempInputPath, req.file.buffer);
 
-            await new Promise((resolve, reject) => {
-                ffmpeg.ffprobe(tempInputPath, (err, metadata) => {
-                    let videoBitrateOpt = '200k';
-                    let audioBitrateOpt = '24k';
-                    let scaleFilter = 'scale=320:-2';
-                    
-                    if (!err && metadata && metadata.format && metadata.format.duration) {
-                        const duration = metadata.format.duration;
-                        const targetBits = targetSizeKB * 1024 * 8;
-                        const totalBps = targetBits / duration;
+            try {
+                await new Promise((resolve, reject) => {
+                    ffmpeg.ffprobe(tempInputPath, (err, metadata) => {
+                        let videoBitrateOpt = '200k';
+                        let audioBitrateOpt = '24k';
+                        let scaleFilter = 'scale=320:-2';
                         
-                        const audioBps = Math.min(32 * 1024, Math.max(8 * 1024, totalBps * 0.25));
-                        const videoBps = Math.max(12 * 1024, totalBps - audioBps);
-                        
-                        videoBitrateOpt = `${Math.max(12, Math.floor(videoBps / 1000))}k`;
-                        audioBitrateOpt = `${Math.max(8, Math.floor(audioBps / 1000))}k`;
-                        
-                        if (targetSizeKB <= 150) {
-                            scaleFilter = 'scale=192:-2';
-                        } else if (targetSizeKB <= 500) {
-                            scaleFilter = 'scale=256:-2';
-                        } else if (targetSizeKB <= 1500) {
-                            scaleFilter = 'scale=426:-2';
-                        } else {
-                            scaleFilter = 'scale=640:-2';
+                        if (!err && metadata && metadata.format && metadata.format.duration) {
+                            const duration = metadata.format.duration;
+                            const targetBits = targetSizeKB * 1024 * 8;
+                            const totalBps = targetBits / duration;
+                            
+                            const audioBps = Math.min(32 * 1024, Math.max(8 * 1024, totalBps * 0.25));
+                            const videoBps = Math.max(12 * 1024, totalBps - audioBps);
+                            
+                            videoBitrateOpt = `${Math.max(12, Math.floor(videoBps / 1000))}k`;
+                            audioBitrateOpt = `${Math.max(8, Math.floor(audioBps / 1000))}k`;
+                            
+                            if (targetSizeKB <= 150) {
+                                scaleFilter = 'scale=192:-2';
+                            } else if (targetSizeKB <= 500) {
+                                scaleFilter = 'scale=256:-2';
+                            } else if (targetSizeKB <= 1500) {
+                                scaleFilter = 'scale=426:-2';
+                            } else {
+                                scaleFilter = 'scale=640:-2';
+                            }
+
+                            console.log(`[FFMPEG] Duration: ${duration}s | Bitrate: ${videoBitrateOpt} | Scale: ${scaleFilter}`);
                         }
 
-                        console.log(`[FFMPEG] Duration: ${duration}s | Bitrate: ${videoBitrateOpt} | Scale: ${scaleFilter}`);
-                    }
+                        let command = ffmpeg(tempInputPath);
 
-                    let command = ffmpeg(tempInputPath);
+                        if (requestedFormat === 'mp3' || mimeType.startsWith('audio/')) {
+                            command.audioCodec('libmp3lame').audioBitrate(audioBitrateOpt);
+                        } else {
+                            command.videoCodec('libx264')
+                                   .audioCodec('aac')
+                                   .audioBitrate(audioBitrateOpt);
 
-                    if (requestedFormat === 'mp3' || mimeType.startsWith('audio/')) {
-                        command.audioCodec('libmp3lame').audioBitrate(audioBitrateOpt);
-                    } else {
-                        command.videoCodec('libx264')
-                               .audioCodec('aac')
-                               .audioBitrate(audioBitrateOpt);
+                            const outputOpts = [
+                                `-b:v ${videoBitrateOpt}`,
+                                `-maxrate ${videoBitrateOpt}`,
+                                `-bufsize ${parseInt(videoBitrateOpt) * 2}k`,
+                                `-fs ${targetSizeBytes}`,
+                                '-preset ultrafast',
+                                '-tune zerolatency',
+                                `-vf ${scaleFilter}`
+                            ];
 
-                        const outputOpts = [
-                            `-b:v ${videoBitrateOpt}`,
-                            `-maxrate ${videoBitrateOpt}`,
-                            `-bufsize ${parseInt(videoBitrateOpt) * 2}k`,
-                            `-fs ${targetSizeBytes}`, // Strict byte limit cutoff flag in FFmpeg
-                            '-preset ultrafast',
-                            '-tune zerolatency',
-                            `-vf ${scaleFilter}`
-                        ];
+                            command.outputOptions(outputOpts);
+                        }
 
-                        command.outputOptions(outputOpts);
-                    }
-
-                    command
-                        .save(tempOutputPath)
-                        .on('end', () => resolve())
-                        .on('error', (err) => reject(err));
+                        command
+                            .save(tempOutputPath)
+                            .on('end', () => resolve())
+                            .on('error', (err) => reject(err));
+                    });
                 });
-            });
 
-            const processedBuffer = fs.readFileSync(tempOutputPath);
-            
-            if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
-            if (fs.existsSync(tempOutputPath)) fs.unlinkSync(tempOutputPath);
+                const processedBuffer = fs.readFileSync(tempOutputPath);
+                
+                console.log(`[SUCCESS] Media encoded. Final size: ${Math.round(processedBuffer.length/1024)}KB (Target was ${targetSizeKB}KB)`);
+                const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
+                const finalExt = requestedFormat === 'mp3' ? 'mp3' : 'mp4';
 
-            console.log(`[SUCCESS] Media encoded. Final size: ${Math.round(processedBuffer.length/1024)}KB (Target was ${targetSizeKB}KB)`);
-            const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
-            const finalExt = requestedFormat === 'mp3' ? 'mp3' : 'mp4';
+                res.set('Content-Disposition', `attachment; filename="OmniPress-${baseName}.${finalExt}"`);
+                res.set('Content-Type', finalExt === 'mp3' ? 'audio/mpeg' : 'video/mp4');
+                return res.send(processedBuffer);
 
-            res.set('Content-Disposition', `attachment; filename="OmniPress-${baseName}.${finalExt}"`);
-            res.set('Content-Type', finalExt === 'mp3' ? 'audio/mpeg' : 'video/mp4');
-            return res.send(processedBuffer);
+            } finally {
+                // Guaranteed cleanup of temporary files
+                if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
+                if (fs.existsSync(tempOutputPath)) fs.unlinkSync(tempOutputPath);
+            }
         }
         
         // --- ROUTE 3: DOCUMENTS & ARCHIVES (ZIP Compression) ---
         else {
             console.log(`[ROUTER] Routing to Document/Archive Engine...`);
-            const tempInputPath = path.join(__dirname, `temp_doc_${Date.now()}_${originalName}`);
+            const uniqueId = `${Date.now()}_${Math.round(Math.random() * 1e9)}`;
+            const tempInputPath = path.join(os.tmpdir(), `temp_doc_${uniqueId}_${originalName}`);
+            const archivePath = path.join(os.tmpdir(), `archive_${uniqueId}.zip`);
+
             fs.writeFileSync(tempInputPath, req.file.buffer);
 
-            const archivePath = path.join(__dirname, `archive_${Date.now()}.zip`);
-            const output = fs.createWriteStream(archivePath);
-            const archive = archiver('zip', { zlib: { level: 9 } });
+            try {
+                const output = fs.createWriteStream(archivePath);
+                const archive = archiver('zip', { zlib: { level: 9 } });
 
-            await new Promise((resolve, reject) => {
-                output.on('close', () => resolve());
-                archive.on('error', (err) => reject(err));
-                archive.pipe(output);
-                archive.file(tempInputPath, { name: originalName });
-                archive.finalize();
-            });
+                await new Promise((resolve, reject) => {
+                    output.on('close', () => resolve());
+                    archive.on('error', (err) => reject(err));
+                    archive.pipe(output);
+                    archive.file(tempInputPath, { name: originalName });
+                    archive.finalize();
+                });
 
-            const zippedBuffer = fs.readFileSync(archivePath);
+                const zippedBuffer = fs.readFileSync(archivePath);
 
-            if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
-            if (fs.existsSync(archivePath)) fs.unlinkSync(archivePath);
+                console.log(`[SUCCESS] Document compressed into archive. Size: ${Math.round(zippedBuffer.length/1024)}KB`);
+                const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
 
-            console.log(`[SUCCESS] Document compressed into archive. Size: ${Math.round(zippedBuffer.length/1024)}KB`);
-            const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
+                res.set('Content-Disposition', `attachment; filename="OmniPress-${baseName}-compressed.zip"`);
+                res.set('Content-Type', 'application/zip');
+                return res.send(zippedBuffer);
 
-            res.set('Content-Disposition', `attachment; filename="OmniPress-${baseName}-compressed.zip"`);
-            res.set('Content-Type', 'application/zip');
-            return res.send(zippedBuffer);
+            } finally {
+                // Guaranteed cleanup of temporary files
+                if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
+                if (fs.existsSync(archivePath)) fs.unlinkSync(archivePath);
+            }
         }
 
     } catch (error) {
@@ -220,5 +233,5 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`[SYSTEM] OmniPress Server active on http://localhost:${PORT}`);
+    console.log(`[SYSTEM] OmniPress Server active on port ${PORT}`);
 });
