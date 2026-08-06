@@ -71,7 +71,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Ultra-Aggressive Client-Side Compressor designed to strictly match Target KB
+    // Helper to generate a blob at a specific quality
+    async function getBlobWithQuality(canvas, mimeType, quality) {
+        return new Promise(resolve => canvas.toBlob(resolve, mimeType, quality));
+    }
+
+    // Binary Search Precision Compressor: Zeroes in extremely close to the exact target KB
     async function compressImageClientSide(file, targetSizeKB, format) {
         return new Promise((resolve, reject) => {
             const reader = new FileReader();
@@ -97,7 +102,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         mimeType = 'image/avif';
                         ext = 'avif';
                     } else if (format === 'auto' && file.type === 'image/png' && targetSizeKB < (file.size / 1024)) {
-                        // Smart switch PNG to WebP for aggressive size reduction to hit strict targets
+                        // Smart switch PNG to WebP for precise lossy target matching
                         mimeType = 'image/webp';
                         ext = 'webp';
                     }
@@ -118,10 +123,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         return;
                     }
 
-                    // Multi-pass strict size enforcement loop
-                    for (let attempt = 0; attempt < 10; attempt++) {
-                        let currentWidth = Math.max(50, Math.round(width * scale));
-                        let currentHeight = Math.max(50, Math.round(height * scale));
+                    // Iterative scaling + Binary search on quality for micro-precision sizing
+                    for (let attempt = 0; attempt < 8; attempt++) {
+                        let currentWidth = Math.max(60, Math.round(width * scale));
+                        let currentHeight = Math.max(60, Math.round(height * scale));
                         
                         canvas.width = currentWidth;
                         canvas.height = currentHeight;
@@ -129,7 +134,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         ctx.drawImage(img, 0, 0, currentWidth, currentHeight);
 
                         if (mimeType === 'image/png') {
-                            const blob = await new Promise(res => canvas.toBlob(res, mimeType));
+                            const blob = await getBlobWithQuality(canvas, mimeType, 1.0);
                             if (blob) {
                                 bestBlob = blob;
                                 if (blob.size <= targetBytes) {
@@ -137,20 +142,43 @@ document.addEventListener('DOMContentLoaded', () => {
                                     return;
                                 }
                             }
-                            scale *= 0.65; // Aggressively scale down dimensions for PNG
+                            scale *= 0.8;
                         } else {
-                            for (let q = 0.90; q >= 0.1; q -= 0.15) {
-                                const blob = await new Promise(res => canvas.toBlob(res, mimeType, q));
-                                if (blob) {
-                                    bestBlob = blob;
-                                    if (blob.size <= targetBytes) {
-                                        resolve({ blob, ext });
-                                        return;
+                            // Binary search for quality to hit target precisely
+                            let low = 0.02;
+                            let high = 1.0;
+                            let optimalBlob = null;
+
+                            // Check max quality first
+                            let maxBlob = await getBlobWithQuality(canvas, mimeType, high);
+                            if (maxBlob && maxBlob.size <= targetBytes) {
+                                resolve({ blob: maxBlob, ext });
+                                return;
+                            }
+
+                            for (let step = 0; step < 6; step++) {
+                                let mid = (low + high) / 2;
+                                let candidateBlob = await getBlobWithQuality(canvas, mimeType, mid);
+                                
+                                if (candidateBlob) {
+                                    if (candidateBlob.size <= targetBytes) {
+                                        optimalBlob = candidateBlob; // Valid, try higher quality to get closer to target
+                                        low = mid;
+                                    } else {
+                                        high = mid; // Too large, lower quality
                                     }
                                 }
                             }
-                            scale *= 0.70;
+
+                            if (optimalBlob) {
+                                resolve({ blob: optimalBlob, ext });
+                                return;
+                            } else {
+                                bestBlob = await getBlobWithQuality(canvas, mimeType, low);
+                            }
                         }
+
+                        scale *= 0.85; // Step down dimensions if target is extremely small
                     }
 
                     resolve({ blob: bestBlob || file, ext });
