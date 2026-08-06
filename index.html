@@ -33,57 +33,57 @@
             </header>
 
             <main>
-                <div id="uploadForm">
-                    <div class="drop-zone" id="dropZone">
-                        <!-- Native file input covers this entire box invisibly -->
-                        <input type="file" id="fileInput" name="file" class="drop-zone-input" accept="*/*">
-                        
-                        <span class="drop-zone-prompt" id="dropZonePrompt">
-                            Drag & drop ANY file here or <span class="browse-link">browse</span>
-                        </span>
-                        
-                        <div id="previewContainer" class="hidden">
-                            <div id="fileIconPreview" style="font-size: 4rem; margin-bottom: 10px;">📄</div>
-                            <img id="imagePreview" src="" alt="Image Preview" class="hidden">
-                            <p id="fileNameDisplay" style="margin-bottom: 15px; font-weight: bold; word-break: break-all;"></p>
-                            <button type="button" id="cancelBtn" class="btn-cancel">Remove File</button>
-                        </div>
-                    </div>
+    <div id="uploadForm">
+        <!-- Using a <label for="fileInput"> makes the entire box natively clickable -->
+        <label class="drop-zone" id="dropZone" for="fileInput">
+            <input type="file" id="fileInput" name="file" class="drop-zone-input" style="display: none;" accept="*/*">
+            
+            <span class="drop-zone-prompt" id="dropZonePrompt">
+                Drag & drop ANY file here or <span class="browse-link">browse</span>
+            </span>
+            
+            <div id="previewContainer" class="hidden">
+                <div id="fileIconPreview" style="font-size: 4rem; margin-bottom: 10px;">📄</div>
+                <img id="imagePreview" src="" alt="Image Preview" class="hidden">
+                <p id="fileNameDisplay" style="margin-bottom: 15px; font-weight: bold; word-break: break-all;"></p>
+                <button type="button" id="cancelBtn" class="btn-cancel">Remove File</button>
+            </div>
+        </label>
 
-                    <div class="settings-group">
-                        <label for="targetSize">Target File Size (KB):</label>
-                        <input type="number" id="targetSize" name="targetSize" value="1500" min="10">
-                    </div>
+        <div class="settings-group">
+            <label for="targetSize">Target File Size (KB):</label>
+            <input type="number" id="targetSize" name="targetSize" value="1500" min="10">
+        </div>
 
-                    <div class="settings-group">
-                        <label for="outputFormat">Format & Conversion:</label>
-                        <select id="outputFormat" name="outputFormat" class="format-select">
-                            <option value="auto">Smart Compress (Keep Original Format)</option>
-                            <optgroup label="Images">
-                                <option value="jpg">Convert to JPG</option>
-                                <option value="jpeg">Convert to JPEG</option>
-                                <option value="png">Convert to PNG</option>
-                                <option value="webp">Convert to WebP</option>
-                                <option value="avif">Convert to AVIF</option>
-                            </optgroup>
-                            <optgroup label="Video & Audio">
-                                <option value="mp4">Compress Video (MP4)</option>
-                                <option value="mp3">Extract Audio (MP3)</option>
-                            </optgroup>
-                            <optgroup label="Documents & Archives">
-                                <option value="pdf">Archive & Compress PDF</option>
-                                <option value="docx">Archive Word Doc (DOCX)</option>
-                                <option value="txt">Compress Text (TXT)</option>
-                                <option value="zip">Compress into ZIP Archive</option>
-                            </optgroup>
-                        </select>
-                    </div>
+        <div class="settings-group">
+            <label for="outputFormat">Format & Conversion:</label>
+            <select id="outputFormat" name="outputFormat" class="format-select">
+                <option value="auto">Smart Compress (Keep Original Format)</option>
+                <optgroup label="Images">
+                    <option value="jpg">Convert to JPG</option>
+                    <option value="jpeg">Convert to JPEG</option>
+                    <option value="png">Convert to PNG</option>
+                    <option value="webp">Convert to WebP</option>
+                    <option value="avif">Convert to AVIF</option>
+                </optgroup>
+                <optgroup label="Video & Audio">
+                    <option value="mp4">Compress Video (MP4)</option>
+                    <option value="mp3">Extract Audio (MP3)</option>
+                </optgroup>
+                <optgroup label="Documents & Archives">
+                    <option value="pdf">Archive & Compress PDF</option>
+                    <option value="docx">Archive Word Doc (DOCX)</option>
+                    <option value="txt">Compress Text (TXT)</option>
+                    <option value="zip">Compress into ZIP Archive</option>
+                </optgroup>
+            </select>
+        </div>
 
-                    <button type="button" id="compressBtn" class="btn">Process & Download File</button>
-                </div>
+        <button type="button" id="compressBtn" class="btn">Process & Download File</button>
+    </div>
 
-                <div id="status" class="hidden" style="margin-top: 15px; font-weight: bold; text-align: center;"></div>
-            </main>
+    <div id="status" class="hidden" style="margin-top: 15px; font-weight: bold; text-align: center;"></div>
+</main>
         </div>
     </section>
 
