@@ -44,6 +44,7 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
 
     const mimeType = req.file.mimetype;
     const targetSizeKB = parseInt(req.body.targetSize) || 1500;
+    const targetBytes = targetSizeKB * 1024;
     const originalName = sanitizeFilename(req.file.originalname);
     const ext = originalName.split('.').pop().toLowerCase();
     const uniqueId = `${Date.now()}_${Math.round(Math.random() * 1e9)}`;
@@ -51,41 +52,60 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
     console.log(`[ROUTER] File: ${originalName} | Type: ${mimeType} | Target: ${targetSizeKB}KB`);
 
     try {
-        // --- IMAGE ROUTING (Sharp Engine) ---
+        // --- HIGH-CLARITY IMAGE ROUTING (Sharp Engine) ---
         if (mimeType.startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'avif'].includes(ext)) {
-            console.log(`[ROUTER] Routing to Sharp Image Engine...`);
-            const targetBytes = targetSizeKB * 1024;
-            let quality = 85;
-            let scale = 1.0;
+            console.log(`[ROUTER] Routing to Clarity-First Sharp Image Engine...`);
             let outputBuffer = null;
+            let currentQuality = 92;
 
-            for (let i = 0; i < 6; i++) {
-                let imageTransformer = sharp(req.file.buffer);
-                const metadata = await imageTransformer.metadata();
-
-                let currentWidth = Math.max(30, Math.round((metadata.width || 800) * scale));
-                let currentHeight = Math.max(30, Math.round((metadata.height || 600) * scale));
-
-                imageTransformer = imageTransformer.resize(currentWidth, currentHeight, { fit: 'inside' });
-
+            // Phase 1: Try reducing quality gradually while maintaining 100% original dimensions & aspect ratio
+            while (currentQuality >= 35) {
+                let transformer = sharp(req.file.buffer);
                 if (ext === 'png' || mimeType === 'image/png') {
-                    outputBuffer = await imageTransformer.png({ compressionLevel: 9 }).toBuffer();
+                    outputBuffer = await transformer.png({ compressionLevel: 9 }).toBuffer();
+                    break; // PNGs don't use lossy quality steps
                 } else if (ext === 'webp' || mimeType === 'image/webp') {
-                    outputBuffer = await imageTransformer.webp({ quality }).toBuffer();
+                    outputBuffer = await transformer.webp({ quality: currentQuality }).toBuffer();
                 } else if (ext === 'avif' || mimeType === 'image/avif') {
-                    outputBuffer = await imageTransformer.avif({ quality }).toBuffer();
+                    outputBuffer = await transformer.avif({ quality: currentQuality }).toBuffer();
                 } else {
-                    outputBuffer = await imageTransformer.jpeg({ quality, mozjpeg: true }).toBuffer();
+                    outputBuffer = await transformer.jpeg({ quality: currentQuality, mozjpeg: true }).toBuffer();
                 }
 
-                if (outputBuffer.length <= targetBytes || quality <= 15) {
+                if (outputBuffer.length <= targetBytes) {
                     break;
                 }
-                quality -= 15;
-                scale *= 0.8;
+                currentQuality -= 4; // Fine-grained drops to preserve maximum clarity
             }
 
-            console.log(`[SUCCESS] Image compressed. Final size: ${Math.round(outputBuffer.length / 1024)}KB`);
+            // Phase 2: If quality alone wasn't enough, gently scale down dimensions while strictly preserving aspect ratio
+            if (outputBuffer.length > targetBytes && ext !== 'png') {
+                let scale = 0.95;
+                for (let i = 0; i < 4; i++) {
+                    let transformer = sharp(req.file.buffer);
+                    const metadata = await transformer.metadata();
+                    let targetWidth = Math.round(metadata.width * scale);
+                    let targetHeight = Math.round(metadata.height * scale);
+
+                    transformer = transformer.resize(targetWidth, targetHeight, { 
+                        fit: 'inside', 
+                        withoutEnlargement: true 
+                    });
+
+                    if (ext === 'webp' || mimeType === 'image/webp') {
+                        outputBuffer = await transformer.webp({ quality: 60 }).toBuffer();
+                    } else if (ext === 'avif' || mimeType === 'image/avif') {
+                        outputBuffer = await transformer.avif({ quality: 60 }).toBuffer();
+                    } else {
+                        outputBuffer = await transformer.jpeg({ quality: 60, mozjpeg: true }).toBuffer();
+                    }
+
+                    if (outputBuffer.length <= targetBytes) break;
+                    scale -= 0.1;
+                }
+            }
+
+            console.log(`[SUCCESS] Image optimized with max clarity. Final size: ${Math.round(outputBuffer.length / 1024)}KB`);
             const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
             
             res.set('Content-Disposition', `attachment; filename="OmniPress-${baseName}.${ext}"`);
@@ -106,27 +126,27 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
             try {
                 await new Promise((resolve, reject) => {
                     ffmpeg.ffprobe(tempInputPath, (err, metadata) => {
-                        let videoBitrateOpt = '300k';
-                        let audioBitrateOpt = '32k';
-                        let scaleFilter = 'scale=426:-2';
+                        let videoBitrateOpt = '400k';
+                        let audioBitrateOpt = '64k';
+                        let scaleFilter = 'scale=640:-2';
                         
                         if (!err && metadata && metadata.format && metadata.format.duration) {
                             const duration = metadata.format.duration;
                             const targetBits = targetSizeKB * 1024 * 8;
                             const totalBps = targetBits / duration;
                             
-                            const audioBps = Math.min(48 * 1024, Math.max(12 * 1024, totalBps * 0.2));
-                            const videoBps = Math.max(48 * 1024, totalBps - audioBps);
+                            const audioBps = Math.min(64 * 1024, Math.max(24 * 1024, totalBps * 0.25));
+                            const videoBps = Math.max(64 * 1024, totalBps - audioBps);
                             
-                            videoBitrateOpt = `${Math.max(48, Math.floor(videoBps / 1000))}k`;
-                            audioBitrateOpt = `${Math.max(12, Math.floor(audioBps / 1000))}k`;
+                            videoBitrateOpt = `${Math.max(64, Math.floor(videoBps / 1000))}k`;
+                            audioBitrateOpt = `${Math.max(24, Math.floor(audioBps / 1000))}k`;
                             
-                            if (targetSizeKB <= 500) {
-                                scaleFilter = 'scale=320:-2';
-                            } else if (targetSizeKB <= 1500) {
+                            if (targetSizeKB <= 1000) {
                                 scaleFilter = 'scale=480:-2';
-                            } else {
+                            } else if (targetSizeKB <= 3000) {
                                 scaleFilter = 'scale=854:-2';
+                            } else {
+                                scaleFilter = 'scale=1280:-2';
                             }
                         }
 
@@ -143,7 +163,7 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
                                 `-b:v ${videoBitrateOpt}`,
                                 `-maxrate ${videoBitrateOpt}`,
                                 `-bufsize ${parseInt(videoBitrateOpt) * 2}k`,
-                                '-preset ultrafast',
+                                '-preset medium', // Better visual retention preset
                                 '-threads 0',
                                 `-vf ${scaleFilter}`
                             ];
@@ -174,7 +194,7 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
             }
         }
         
-        // --- DOCUMENTS & PDFS ROUTING (Safe ZIP Archive Compression) ---
+        // --- DOCUMENTS & PDFS ROUTING ---
         else {
             console.log(`[ROUTER] Routing to Document & Archive Engine...`);
             const tempInputPath = path.join(os.tmpdir(), `temp_doc_${uniqueId}_${originalName}`);
@@ -220,4 +240,3 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
 app.listen(PORT, () => {
     console.log(`[SYSTEM] OmniPress Server active on port ${PORT}`);
 });
-```[cite: 8]
