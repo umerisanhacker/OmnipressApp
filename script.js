@@ -104,26 +104,31 @@ document.addEventListener('DOMContentLoaded', () => {
         let bestBlob = null;
         let minDifference = Infinity;
         
-        const isPng = mimeType === 'image/png';
+        const isPng = mimeType === 'image/png' || originalExt === 'png';
         
-        for (let attempt = 0; attempt < 6; attempt++) {
-            canvas.width = Math.max(40, Math.round(width * scale));
-            canvas.height = Math.max(40, Math.round(height * scale));
+        // Iterative downscaling loop for both lossy and lossless formats
+        for (let attempt = 0; attempt < 10; attempt++) {
+            let currentWidth = Math.max(30, Math.round(width * scale));
+            let currentHeight = Math.max(30, Math.round(height * scale));
+            canvas.width = currentWidth;
+            canvas.height = currentHeight;
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-            if (!isPng && (mimeType === 'image/jpeg' || mimeType === 'image/webp')) {
-                let low = 0.05, high = 1.0;
-                
-                for (let q = 0; q < 6; q++) {
+            if (!isPng && (mimeType === 'image/jpeg' || mimeType === 'image/webp' || originalExt === 'jpg' || originalExt === 'jpeg' || originalExt === 'webp')) {
+                let low = 0.01, high = 1.0;
+                let bestQualityAtThisScale = null;
+                let minDiffThisScale = Infinity;
+
+                for (let q = 0; q < 8; q++) {
                     let mid = (low + high) / 2;
                     let blob = await new Promise(res => canvas.toBlob(res, mimeType, mid));
                     if (blob) {
-                        const diff = Math.abs(targetBytes - blob.size);
+                        const diff = targetBytes - blob.size;
                         if (blob.size <= targetBytes) {
-                            if (diff < minDifference) {
-                                minDifference = diff;
-                                bestBlob = blob;
+                            if (diff < minDiffThisScale) {
+                                minDiffThisScale = diff;
+                                bestQualityAtThisScale = blob;
                             }
                             low = mid;
                         } else {
@@ -131,32 +136,47 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     }
                 }
+
+                if (bestQualityAtThisScale) {
+                    const diffFromTarget = targetBytes - bestQualityAtThisScale.size;
+                    if (diffFromTarget < minDifference) {
+                        minDifference = diffFromTarget;
+                        bestBlob = bestQualityAtThisScale;
+                    }
+                    if (diffFromTarget / targetBytes < 0.03) {
+                        return { blob: bestBlob, ext: originalExt };
+                    }
+                }
             } else {
                 let blob = await new Promise(res => canvas.toBlob(res, mimeType));
                 if (blob) {
-                    const diff = Math.abs(targetBytes - blob.size);
-                    if (blob.size <= targetBytes && diff < minDifference) {
-                        minDifference = diff;
-                        bestBlob = blob;
+                    const diff = targetBytes - blob.size;
+                    if (blob.size <= targetBytes) {
+                        if (diff < minDifference) {
+                            minDifference = diff;
+                            bestBlob = blob;
+                        }
+                        if (diff / targetBytes < 0.03) {
+                            return { blob: bestBlob, ext: originalExt };
+                        }
                     }
                 }
             }
 
-            if (bestBlob && Math.abs(targetBytes - bestBlob.size) / targetBytes < 0.03) {
-                return { blob: bestBlob, ext: originalExt };
-            }
-
-            scale *= 0.8;
+            scale *= 0.75;
+            if (width * scale < 30 || height * scale < 30) break;
         }
 
         if (bestBlob) {
             return { blob: bestBlob, ext: originalExt };
         }
 
-        canvas.width = Math.max(40, Math.round(width * 0.2));
-        canvas.height = Math.max(40, Math.round(height * 0.2));
+        // Emergency fallback
+        canvas.width = Math.max(30, Math.round(width * 0.15));
+        canvas.height = Math.max(30, Math.round(height * 0.15));
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        let fallbackBlob = await new Promise(res => canvas.toBlob(res, mimeType, 0.3));
+        let fallbackBlob = await new Promise(res => canvas.toBlob(res, mimeType, 0.2));
         return { blob: fallbackBlob || img, ext: originalExt };
     }
 
@@ -173,7 +193,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 const pdfDoc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
                 const numPages = pdfDoc.numPages;
                 
-                // Calculate precise byte allocation per page factoring in PDF structural overhead
                 const overheadBuffer = numPages * 300;
                 const effectiveTargetBytes = Math.max(targetBytes * 0.9, targetBytes - overheadBuffer);
                 const targetBytesPerPage = Math.max(3072, Math.floor(effectiveTargetBytes / numPages));
@@ -229,7 +248,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         } else if (isImage) {
             if (statusCallback) statusCallback('Targeting precise image file size...');
-            const mimeType = file.type || 'image/jpeg';
+            const mimeType = file.type || (extName === 'png' ? 'image/png' : 'image/jpeg');
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
                 reader.readAsDataURL(file);
@@ -365,4 +384,3 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 });
-```[cite: 5, 6, 7]
