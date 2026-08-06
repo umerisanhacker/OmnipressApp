@@ -100,84 +100,46 @@ document.addEventListener('DOMContentLoaded', () => {
         
         let width = img.width;
         let height = img.height;
-        let scale = 1.0;
+        canvas.width = width;
+        canvas.height = height;
+        ctx.drawImage(img, 0, 0, width, height);
+
         let bestBlob = null;
-        let minDifference = Infinity;
-        
-        const isPng = mimeType === 'image/png' || originalExt === 'png';
-        
-        // Iterative downscaling loop for both lossy and lossless formats
-        for (let attempt = 0; attempt < 10; attempt++) {
-            let currentWidth = Math.max(30, Math.round(width * scale));
-            let currentHeight = Math.max(30, Math.round(height * scale));
-            canvas.width = currentWidth;
-            canvas.height = currentHeight;
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        let currentQuality = 0.90;
 
-            if (!isPng && (mimeType === 'image/jpeg' || mimeType === 'image/webp' || originalExt === 'jpg' || originalExt === 'jpeg' || originalExt === 'webp')) {
-                let low = 0.01, high = 1.0;
-                let bestQualityAtThisScale = null;
-                let minDiffThisScale = Infinity;
-
-                for (let q = 0; q < 8; q++) {
-                    let mid = (low + high) / 2;
-                    let blob = await new Promise(res => canvas.toBlob(res, mimeType, mid));
-                    if (blob) {
-                        const diff = targetBytes - blob.size;
-                        if (blob.size <= targetBytes) {
-                            if (diff < minDiffThisScale) {
-                                minDiffThisScale = diff;
-                                bestQualityAtThisScale = blob;
-                            }
-                            low = mid;
-                        } else {
-                            high = mid;
-                        }
-                    }
-                }
-
-                if (bestQualityAtThisScale) {
-                    const diffFromTarget = targetBytes - bestQualityAtThisScale.size;
-                    if (diffFromTarget < minDifference) {
-                        minDifference = diffFromTarget;
-                        bestBlob = bestQualityAtThisScale;
-                    }
-                    if (diffFromTarget / targetBytes < 0.03) {
-                        return { blob: bestBlob, ext: originalExt };
-                    }
-                }
-            } else {
-                let blob = await new Promise(res => canvas.toBlob(res, mimeType));
-                if (blob) {
-                    const diff = targetBytes - blob.size;
-                    if (blob.size <= targetBytes) {
-                        if (diff < minDifference) {
-                            minDifference = diff;
-                            bestBlob = blob;
-                        }
-                        if (diff / targetBytes < 0.03) {
-                            return { blob: bestBlob, ext: originalExt };
-                        }
-                    }
+        // Phase 1: High-clarity quality-only reduction preserving strict dimensions and aspect ratio
+        while (currentQuality >= 0.35) {
+            let blob = await new Promise(res => canvas.toBlob(res, mimeType, currentQuality));
+            if (blob) {
+                bestBlob = blob;
+                if (blob.size <= targetBytes) {
+                    break;
                 }
             }
-
-            scale *= 0.75;
-            if (width * scale < 30 || height * scale < 30) break;
+            currentQuality -= 0.05;
         }
 
-        if (bestBlob) {
-            return { blob: bestBlob, ext: originalExt };
+        // Phase 2: Gentle scaling only if quality adjustments alone didn't suffice
+        if (bestBlob && bestBlob.size > targetBytes) {
+            let scale = 0.90;
+            for (let i = 0; i < 3; i++) {
+                let targetW = Math.round(width * scale);
+                let targetH = Math.round(height * scale);
+                canvas.width = targetW;
+                canvas.height = targetH;
+                ctx.clearRect(0, 0, targetW, targetH);
+                ctx.drawImage(img, 0, 0, targetW, targetH);
+
+                let blob = await new Promise(res => canvas.toBlob(res, mimeType, 0.65));
+                if (blob) {
+                    bestBlob = blob;
+                    if (blob.size <= targetBytes) break;
+                }
+                scale -= 0.1;
+            }
         }
 
-        // Emergency fallback
-        canvas.width = Math.max(30, Math.round(width * 0.15));
-        canvas.height = Math.max(30, Math.round(height * 0.15));
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        let fallbackBlob = await new Promise(res => canvas.toBlob(res, mimeType, 0.2));
-        return { blob: fallbackBlob || img, ext: originalExt };
+        return { blob: bestBlob || img, ext: originalExt };
     }
 
     async function compressFileClientSide(file, targetSizeKB, statusCallback) {
@@ -196,9 +158,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 const overheadBuffer = numPages * 300;
                 const effectiveTargetBytes = Math.max(targetBytes * 0.9, targetBytes - overheadBuffer);
                 const targetBytesPerPage = Math.max(3072, Math.floor(effectiveTargetBytes / numPages));
-                
-                const compressionRatio = targetBytes / file.size;
-                const renderScale = compressionRatio < 0.3 ? 0.6 : (compressionRatio < 0.6 ? 0.8 : 1.0);
 
                 const newPdfDoc = await window.PDFLib.PDFDocument.create();
 
@@ -209,7 +168,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
 
                     const page = await pdfDoc.getPage(i);
-                    let viewport = page.getViewport({ scale: renderScale });
+                    let viewport = page.getViewport({ scale: 1.0 });
                     
                     let canvas = document.createElement('canvas');
                     let ctx = canvas.getContext('2d');
@@ -218,7 +177,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     await page.render({ canvasContext: ctx, viewport: viewport }).promise;
 
                     let img = new Image();
-                    img.src = canvas.toDataURL('image/jpeg', 0.8);
+                    img.src = canvas.toDataURL('image/jpeg', 0.92);
                     await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
 
                     let result = await compressImageToTargetObject(img, targetBytesPerPage, 'image/jpeg', 'jpg');
@@ -325,7 +284,7 @@ document.addEventListener('DOMContentLoaded', () => {
                             }
 
                             blob = await response.blob();
-                            finalExt = 'zip';
+                            finalExt = extName;
                         } else {
                             throw clientErr;
                         }
