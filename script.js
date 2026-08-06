@@ -145,21 +145,23 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         let mimeType = 'image/jpeg';
-        let ext = isPdf ? 'pdf' : 'jpg';
+        
+        // Respect the user's format dropdown selection if specified, otherwise default intelligently
+        let ext = 'jpg';
+        if (format && format !== 'auto') {
+            ext = format;
+        } else if (isPdf) {
+            ext = 'pdf';
+        }
 
         if (!isPdf) {
             if (format === 'png' || file.type === 'image/png') {
                 mimeType = 'image/png';
-                ext = 'png';
+                ext = format === 'auto' ? 'png' : format;
             } else if (format === 'webp') {
                 mimeType = 'image/webp';
-                ext = 'webp';
             } else if (format === 'avif') {
                 mimeType = 'image/avif';
-                ext = 'avif';
-            } else {
-                mimeType = 'image/jpeg';
-                ext = 'jpg';
             }
         }
 
@@ -176,7 +178,7 @@ document.addEventListener('DOMContentLoaded', () => {
             let tempCtx = tempCanvas.getContext('2d');
             tempCtx.drawImage(canvas, 0, 0, currentWidth, currentHeight);
 
-            if (mimeType === 'image/png' && !isPdf) {
+            if (mimeType === 'image/png' && !isPdf && format !== 'docx') {
                 const blob = await getBlobWithQuality(tempCanvas, mimeType, 1.0);
                 if (blob) {
                     bestBlob = blob;
@@ -191,7 +193,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 let optimalBlob = null;
 
                 let maxBlob = await getBlobWithQuality(tempCanvas, mimeType, high);
-                if (maxBlob && maxBlob.size <= targetBytes && !isPdf) {
+                if (maxBlob && maxBlob.size <= targetBytes && !isPdf && format !== 'docx') {
                     return { blob: maxBlob, ext };
                 }
 
@@ -211,7 +213,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 if (optimalBlob) {
                     bestBlob = optimalBlob;
-                    if (!isPdf) return { blob: bestBlob, ext };
+                    if (!isPdf || format === 'jpg' || format === 'png' || format === 'webp') {
+                        return { blob: bestBlob, ext };
+                    }
                     break;
                 } else {
                     bestBlob = await getBlobWithQuality(tempCanvas, mimeType, low);
@@ -221,8 +225,8 @@ document.addEventListener('DOMContentLoaded', () => {
             scale *= 0.80;
         }
 
-        // If it's a PDF, wrap the compressed image back into a clean PDF container using pdf-lib
-        if (isPdf && bestBlob) {
+        // If it's a PDF and format requested PDF or Auto, wrap it back into a PDF container
+        if (isPdf && bestBlob && (ext === 'pdf' || format === 'auto')) {
             await loadLibraries();
             const pdfDoc = await window.PDFLib.PDFDocument.create();
             const page = pdfDoc.addPage([canvas.width, canvas.height]);
