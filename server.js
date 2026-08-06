@@ -51,8 +51,50 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
     console.log(`[ROUTER] File: ${originalName} | Type: ${mimeType} | Target: ${targetSizeKB}KB`);
 
     try {
+        // --- IMAGE ROUTING (Sharp Engine) ---
+        if (mimeType.startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'avif'].includes(ext)) {
+            console.log(`[ROUTER] Routing to Sharp Image Engine...`);
+            const targetBytes = targetSizeKB * 1024;
+            let quality = 85;
+            let scale = 1.0;
+            let outputBuffer = null;
+
+            for (let i = 0; i < 6; i++) {
+                let imageTransformer = sharp(req.file.buffer);
+                const metadata = await imageTransformer.metadata();
+
+                let currentWidth = Math.max(30, Math.round((metadata.width || 800) * scale));
+                let currentHeight = Math.max(30, Math.round((metadata.height || 600) * scale));
+
+                imageTransformer = imageTransformer.resize(currentWidth, currentHeight, { fit: 'inside' });
+
+                if (ext === 'png' || mimeType === 'image/png') {
+                    outputBuffer = await imageTransformer.png({ compressionLevel: 9 }).toBuffer();
+                } else if (ext === 'webp' || mimeType === 'image/webp') {
+                    outputBuffer = await imageTransformer.webp({ quality }).toBuffer();
+                } else if (ext === 'avif' || mimeType === 'image/avif') {
+                    outputBuffer = await imageTransformer.avif({ quality }).toBuffer();
+                } else {
+                    outputBuffer = await imageTransformer.jpeg({ quality, mozjpeg: true }).toBuffer();
+                }
+
+                if (outputBuffer.length <= targetBytes || quality <= 15) {
+                    break;
+                }
+                quality -= 15;
+                scale *= 0.8;
+            }
+
+            console.log(`[SUCCESS] Image compressed. Final size: ${Math.round(outputBuffer.length / 1024)}KB`);
+            const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
+            
+            res.set('Content-Disposition', `attachment; filename="OmniPress-${baseName}.${ext}"`);
+            res.set('Content-Type', mimeType || `image/${ext === 'jpg' ? 'jpeg' : ext}`);
+            return res.send(outputBuffer);
+        }
+
         // --- VIDEO & AUDIO ROUTING ---
-        if (mimeType.startsWith('video/') || mimeType.startsWith('audio/') || ['mp4', 'mov', 'mp3', 'mkv', 'avi'].includes(ext)) {
+        else if (mimeType.startsWith('video/') || mimeType.startsWith('audio/') || ['mp4', 'mov', 'mp3', 'mkv', 'avi'].includes(ext)) {
             console.log(`[ROUTER] Routing to FFmpeg Media Engine...`);
             
             const tempInputPath = path.join(os.tmpdir(), `temp_in_${uniqueId}_${originalName}`);
@@ -178,3 +220,4 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
 app.listen(PORT, () => {
     console.log(`[SYSTEM] OmniPress Server active on port ${PORT}`);
 });
+```[cite: 8]
