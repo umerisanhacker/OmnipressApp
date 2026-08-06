@@ -52,42 +52,8 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
     console.log(`[ROUTER] File: ${originalName} | Type: ${mimeType} | Target: ${targetSizeKB}KB | Format: ${requestedFormat}`);
 
     try {
-        // --- 1. IMAGE ROUTING (Handled primarily client-side now, but secure fallback here) ---
-        if (mimeType.startsWith('image/')) {
-            let targetFormat = requestedFormat === 'auto' ? ext : requestedFormat;
-            let outputExtension = targetFormat;
-            let quality = 85;
-            let compressedBuffer;
-
-            let imagePipeline = sharp(req.file.buffer);
-            if (targetFormat === 'jpg' || targetFormat === 'jpeg') {
-                imagePipeline = imagePipeline.jpeg({ quality, force: true });
-                outputExtension = 'jpg';
-            } else if (targetFormat === 'png') {
-                imagePipeline = imagePipeline.png({ quality: 8, force: true });
-                outputExtension = 'png';
-            } else if (targetFormat === 'webp') {
-                imagePipeline = imagePipeline.webp({ quality, force: true });
-                outputExtension = 'webp';
-            } else if (targetFormat === 'avif') {
-                imagePipeline = imagePipeline.avif({ quality, force: true });
-                outputExtension = 'avif';
-            } else {
-                imagePipeline = imagePipeline.jpeg({ quality, force: true });
-                outputExtension = ext || 'jpg';
-            }
-
-            compressedBuffer = await imagePipeline.toBuffer();
-            console.log(`[SUCCESS] Image fallback processed. Size: ${Math.round(compressedBuffer.length/1024)}KB`);
-            
-            const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
-            res.set('Content-Disposition', `attachment; filename="OmniPress-${baseName}.${outputExtension}"`);
-            res.set('Content-Type', `image/${outputExtension === 'jpg' ? 'jpeg' : outputExtension}`);
-            return res.send(compressedBuffer);
-        }
-        
-        // --- 2. VIDEO & AUDIO ROUTING ---
-        else if (mimeType.startsWith('video/') || mimeType.startsWith('audio/') || ['mp4', 'mov', 'mp3', 'mkv', 'avi'].includes(ext)) {
+        // --- VIDEO & AUDIO ROUTING ---
+        if (mimeType.startsWith('video/') || mimeType.startsWith('audio/') || ['mp4', 'mov', 'mp3', 'mkv', 'avi'].includes(ext)) {
             console.log(`[ROUTER] Routing to FFmpeg Media Engine...`);
             
             const tempInputPath = path.join(os.tmpdir(), `temp_in_${uniqueId}_${originalName}`);
@@ -99,27 +65,27 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
             try {
                 await new Promise((resolve, reject) => {
                     ffmpeg.ffprobe(tempInputPath, (err, metadata) => {
-                        let videoBitrateOpt = '500k';
-                        let audioBitrateOpt = '64k';
-                        let scaleFilter = 'scale=640:-2';
+                        let videoBitrateOpt = '300k';
+                        let audioBitrateOpt = '32k';
+                        let scaleFilter = 'scale=426:-2';
                         
                         if (!err && metadata && metadata.format && metadata.format.duration) {
                             const duration = metadata.format.duration;
                             const targetBits = targetSizeKB * 1024 * 8;
                             const totalBps = targetBits / duration;
                             
-                            const audioBps = Math.min(64 * 1024, Math.max(16 * 1024, totalBps * 0.2));
-                            const videoBps = Math.max(64 * 1024, totalBps - audioBps);
+                            const audioBps = Math.min(48 * 1024, Math.max(12 * 1024, totalBps * 0.2));
+                            const videoBps = Math.max(48 * 1024, totalBps - audioBps);
                             
-                            videoBitrateOpt = `${Math.max(64, Math.floor(videoBps / 1000))}k`;
-                            audioBitrateOpt = `${Math.max(16, Math.floor(audioBps / 1000))}k`;
+                            videoBitrateOpt = `${Math.max(48, Math.floor(videoBps / 1000))}k`;
+                            audioBitrateOpt = `${Math.max(12, Math.floor(audioBps / 1000))}k`;
                             
                             if (targetSizeKB <= 500) {
-                                scaleFilter = 'scale=426:-2';
+                                scaleFilter = 'scale=320:-2';
                             } else if (targetSizeKB <= 1500) {
-                                scaleFilter = 'scale=640:-2';
+                                scaleFilter = 'scale=480:-2';
                             } else {
-                                scaleFilter = 'scale=1280:-2';
+                                scaleFilter = 'scale=854:-2';
                             }
                         }
 
@@ -132,7 +98,6 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
                                    .audioCodec('aac')
                                    .audioBitrate(audioBitrateOpt);
 
-                            // NOTE: Removed the destructive `-fs` flag to prevent container corruption and download failures
                             const outputOpts = [
                                 `-b:v ${videoBitrateOpt}`,
                                 `-maxrate ${videoBitrateOpt}`,
@@ -153,7 +118,7 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
                 });
 
                 const processedBuffer = fs.readFileSync(tempOutputPath);
-                console.log(`[SUCCESS] Media encoded safely. Final size: ${Math.round(processedBuffer.length/1024)}KB`);
+                console.log(`[SUCCESS] Media encoded. Final size: ${Math.round(processedBuffer.length/1024)}KB`);
                 
                 const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
                 const finalExt = isMp3 ? 'mp3' : 'mp4';
@@ -168,50 +133,39 @@ app.post('/api/compress/universal', upload.single('file'), async (req, res) => {
             }
         }
         
-        // --- 3. DOCUMENT & ARCHIVE ROUTING (Respects requested format) ---
+        // --- DOCUMENT & ARCHIVE ROUTING (Ensures actual compression via ZIP archiving) ---
         else {
             console.log(`[ROUTER] Routing to Document & Archive Engine...`);
             const tempInputPath = path.join(os.tmpdir(), `temp_doc_${uniqueId}_${originalName}`);
+            const archivePath = path.join(os.tmpdir(), `archive_${uniqueId}.zip`);
+
             fs.writeFileSync(tempInputPath, req.file.buffer);
 
-            const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
-            let outputExtension = ext;
-            let outputMime = mimeType || 'application/octet-stream';
-            let finalBuffer = req.file.buffer;
+            try {
+                const output = fs.createWriteStream(archivePath);
+                const archive = archiver('zip', { zlib: { level: 9 } });
 
-            // Respect user choice if valid
-            if (requestedFormat && requestedFormat !== 'auto') {
-                outputExtension = requestedFormat;
-                if (requestedFormat === 'pdf') outputMime = 'application/pdf';
-                else if (requestedFormat === 'docx') outputMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
-                else if (requestedFormat === 'txt') outputMime = 'text/plain';
-                else if (requestedFormat === 'zip') {
-                    // Create actual ZIP archive if zip was explicitly chosen
-                    const archivePath = path.join(os.tmpdir(), `archive_${uniqueId}.zip`);
-                    const output = fs.createWriteStream(archivePath);
-                    const archive = archiver('zip', { zlib: { level: 9 } });
+                await new Promise((resolve, reject) => {
+                    output.on('close', () => resolve());
+                    archive.on('error', (err) => reject(err));
+                    archive.pipe(output);
+                    archive.file(tempInputPath, { name: originalName });
+                    archive.finalize();
+                });
 
-                    await new Promise((resolve, reject) => {
-                        output.on('close', () => resolve());
-                        archive.on('error', (err) => reject(err));
-                        archive.pipe(output);
-                        archive.file(tempInputPath, { name: originalName });
-                        archive.finalize();
-                    });
+                const zippedBuffer = fs.readFileSync(archivePath);
+                console.log(`[SUCCESS] Document compressed into ZIP archive. Size: ${Math.round(zippedBuffer.length/1024)}KB`);
+                
+                const baseName = originalName.substring(0, originalName.lastIndexOf('.')) || originalName;
 
-                    finalBuffer = fs.readFileSync(archivePath);
-                    outputExtension = 'zip';
-                    outputMime = 'application/zip';
-                    if (fs.existsSync(archivePath)) fs.unlinkSync(archivePath);
-                }
+                res.set('Content-Disposition', `attachment; filename="OmniPress-${baseName}-compressed.zip"`);
+                res.set('Content-Type', 'application/zip');
+                return res.send(zippedBuffer);
+
+            } finally {
+                if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
+                if (fs.existsSync(archivePath)) fs.unlinkSync(archivePath);
             }
-
-            if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
-
-            console.log(`[SUCCESS] Document processed. Format: ${outputExtension} | Size: ${Math.round(finalBuffer.length/1024)}KB`);
-            res.set('Content-Disposition', `attachment; filename="OmniPress-${baseName}.${outputExtension}"`);
-            res.set('Content-Type', outputMime);
-            return res.send(finalBuffer);
         }
 
     } catch (error) {
