@@ -1,4 +1,5 @@
 document.addEventListener('DOMContentLoaded', () => {
+    const dropZone = document.getElementById('dropZone');
     const fileInput = document.getElementById('fileInput');
     const compressBtn = document.getElementById('compressBtn');
     const formatSelect = document.getElementById('outputFormat');
@@ -17,15 +18,42 @@ document.addEventListener('DOMContentLoaded', () => {
         if (e.target.files && e.target.files.length > 0) {
             selectedFile = e.target.files[0];
             updateFileUI(selectedFile);
-            
-            // Reset input value so the exact same file can be re-selected if needed
-            fileInput.value = '';
+            fileInput.value = ''; // Reset so the same file can be chosen again if needed
+        }
+    });
+
+    // Prevent default behaviors for drag and drop
+    ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+        }, false);
+    });
+
+    ['dragenter', 'dragover'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => {
+            dropZone.classList.add('dragover');
+        }, false);
+    });
+
+    ['dragleave', 'drop'].forEach(eventName => {
+        dropZone.addEventListener(eventName, () => {
+            dropZone.classList.remove('dragover');
+        }, false);
+    });
+
+    // Handle dropped files
+    dropZone.addEventListener('drop', (e) => {
+        const files = e.dataTransfer.files;
+        if (files && files.length > 0) {
+            selectedFile = files[0];
+            updateFileUI(selectedFile);
         }
     });
 
     function updateFileUI(file) {
         const fileSizeKB = Math.round(file.size / 1024);
-        console.log(`[UI SUCCESS] File loaded into memory: ${file.name} (${fileSizeKB} KB)`);
+        console.log(`[UI SUCCESS] File loaded: ${file.name} (${fileSizeKB} KB)`);
         
         if (statusDiv) {
             statusDiv.classList.remove('hidden');
