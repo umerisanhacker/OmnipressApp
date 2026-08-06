@@ -106,7 +106,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const isPng = mimeType === 'image/png';
         
-        for (let attempt = 0; attempt < 6; attempt++) {
+        for (let attempt = 0; attempt < 5; attempt++) {
             canvas.width = Math.max(50, Math.round(width * scale));
             canvas.height = Math.max(50, Math.round(height * scale));
             ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -116,7 +116,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 let low = 0.05, high = 1.0;
                 let bestQualityBlobThisScale = null;
                 
-                for (let q = 0; q < 7; q++) {
+                for (let q = 0; q < 5; q++) {
                     let mid = (low + high) / 2;
                     let blob = await new Promise(res => canvas.toBlob(res, mimeType, mid));
                     if (blob) {
@@ -155,7 +155,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 return { blob: bestBlob, ext: originalExt };
             }
 
-            scale *= 0.85;
+            scale *= 0.8;
         }
 
         if (bestBlob) {
@@ -169,7 +169,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return { blob: fallbackBlob || img, ext: originalExt };
     }
 
-    async function compressFileClientSide(file, targetSizeKB) {
+    async function compressFileClientSide(file, targetSizeKB, statusCallback) {
         await loadLibraries();
         const targetBytes = targetSizeKB * 1024;
         const extName = file.name.split('.').pop().toLowerCase();
@@ -182,13 +182,17 @@ document.addEventListener('DOMContentLoaded', () => {
                 const pdfDoc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
                 const numPages = pdfDoc.numPages;
                 
-                // Distribute target budget across all pages securely
-                const targetBytesPerPage = Math.max(8192, Math.floor(targetBytes / numPages));
+                const targetBytesPerPage = Math.max(4096, Math.floor(targetBytes / numPages));
                 const newPdfDoc = await window.PDFLib.PDFDocument.create();
 
                 for (let i = 1; i <= numPages; i++) {
+                    if (statusCallback) {
+                        const percent = Math.round((i / numPages) * 100);
+                        statusCallback(`Processing PDF: Page ${i} of ${numPages} (${percent}%)`);
+                    }
+
                     const page = await pdfDoc.getPage(i);
-                    let scale = numPages > 50 ? 0.75 : 1.0;
+                    let scale = numPages > 100 ? 0.6 : 0.85;
                     let viewport = page.getViewport({ scale: scale });
                     
                     let canvas = document.createElement('canvas');
@@ -198,7 +202,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     await page.render({ canvasContext: ctx, viewport: viewport }).promise;
 
                     let img = new Image();
-                    img.src = canvas.toDataURL('image/jpeg', 0.85);
+                    img.src = canvas.toDataURL('image/jpeg', 0.8);
                     await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
 
                     let result = await compressImageToTargetObject(img, targetBytesPerPage, 'image/jpeg', 'jpg');
@@ -213,8 +217,14 @@ document.addEventListener('DOMContentLoaded', () => {
                         width: viewport.width,
                         height: viewport.height,
                     });
+
+                    // Yield execution thread every few pages to prevent freezing the browser UI
+                    if (i % 5 === 0) {
+                        await new Promise(r => setTimeout(r, 10));
+                    }
                 }
 
+                if (statusCallback) statusCallback('Finalizing and packaging compressed PDF...');
                 const pdfBytes = await newPdfDoc.save();
                 return { blob: new Blob([pdfBytes], { type: 'application/pdf' }), ext: 'pdf' };
             } catch (pdfErr) {
@@ -222,6 +232,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error("SERVER_FALLBACK");
             }
         } else if (isImage) {
+            if (statusCallback) statusCallback('Optimizing image to target size...');
             const mimeType = file.type || 'image/jpeg';
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -259,20 +270,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (statusDiv) {
                 statusDiv.classList.remove('hidden');
-                statusDiv.textContent = 'Processing and compressing file to target size... Please wait.';
+                statusDiv.textContent = 'Initializing compression engine...';
                 statusDiv.style.color = '#007bff';
             }
+
+            const updateStatus = (msg) => {
+                if (statusDiv) {
+                    statusDiv.textContent = msg;
+                }
+            };
 
             try {
                 let blob, finalExt;
 
                 if (isClientProcessable) {
                     try {
-                        const result = await compressFileClientSide(selectedFile, targetSizeVal);
+                        const result = await compressFileClientSide(selectedFile, targetSizeVal, updateStatus);
                         blob = result.blob;
                         finalExt = result.ext;
                     } catch (clientErr) {
                         if (clientErr.message === "SERVER_FALLBACK") {
+                            updateStatus('Switching to server fallback engine...');
                             const formData = new FormData();
                             formData.append('file', selectedFile);
                             formData.append('targetSize', targetSizeVal);
@@ -298,6 +316,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     }
                 } else {
+                    updateStatus('Processing file via server engine...');
                     const formData = new FormData();
                     formData.append('file', selectedFile);
                     formData.append('targetSize', targetSizeVal);
