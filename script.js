@@ -106,23 +106,21 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const isPng = mimeType === 'image/png';
         
-        for (let attempt = 0; attempt < 5; attempt++) {
-            canvas.width = Math.max(50, Math.round(width * scale));
-            canvas.height = Math.max(50, Math.round(height * scale));
+        for (let attempt = 0; attempt < 6; attempt++) {
+            canvas.width = Math.max(40, Math.round(width * scale));
+            canvas.height = Math.max(40, Math.round(height * scale));
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
             if (!isPng && (mimeType === 'image/jpeg' || mimeType === 'image/webp')) {
                 let low = 0.05, high = 1.0;
-                let bestQualityBlobThisScale = null;
                 
-                for (let q = 0; q < 5; q++) {
+                for (let q = 0; q < 6; q++) {
                     let mid = (low + high) / 2;
                     let blob = await new Promise(res => canvas.toBlob(res, mimeType, mid));
                     if (blob) {
-                        const diff = targetBytes - blob.size;
+                        const diff = Math.abs(targetBytes - blob.size);
                         if (blob.size <= targetBytes) {
-                            bestQualityBlobThisScale = blob;
                             if (diff < minDifference) {
                                 minDifference = diff;
                                 bestBlob = blob;
@@ -133,17 +131,10 @@ document.addEventListener('DOMContentLoaded', () => {
                         }
                     }
                 }
-                if (!bestQualityBlobThisScale && high === 1.0) {
-                    let blob = await new Promise(res => canvas.toBlob(res, mimeType, 0.05));
-                    if (blob && blob.size < targetBytes && (targetBytes - blob.size < minDifference)) {
-                        minDifference = targetBytes - blob.size;
-                        bestBlob = blob;
-                    }
-                }
             } else {
                 let blob = await new Promise(res => canvas.toBlob(res, mimeType));
                 if (blob) {
-                    const diff = targetBytes - blob.size;
+                    const diff = Math.abs(targetBytes - blob.size);
                     if (blob.size <= targetBytes && diff < minDifference) {
                         minDifference = diff;
                         bestBlob = blob;
@@ -151,7 +142,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
-            if (bestBlob && Math.abs(targetBytes - bestBlob.size) / targetBytes < 0.05) {
+            if (bestBlob && Math.abs(targetBytes - bestBlob.size) / targetBytes < 0.03) {
                 return { blob: bestBlob, ext: originalExt };
             }
 
@@ -162,8 +153,8 @@ document.addEventListener('DOMContentLoaded', () => {
             return { blob: bestBlob, ext: originalExt };
         }
 
-        canvas.width = Math.max(50, Math.round(width * 0.2));
-        canvas.height = Math.max(50, Math.round(height * 0.2));
+        canvas.width = Math.max(40, Math.round(width * 0.2));
+        canvas.height = Math.max(40, Math.round(height * 0.2));
         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
         let fallbackBlob = await new Promise(res => canvas.toBlob(res, mimeType, 0.3));
         return { blob: fallbackBlob || img, ext: originalExt };
@@ -182,18 +173,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 const pdfDoc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
                 const numPages = pdfDoc.numPages;
                 
-                const targetBytesPerPage = Math.max(4096, Math.floor(targetBytes / numPages));
+                // Calculate precise byte allocation per page factoring in PDF structural overhead
+                const overheadBuffer = numPages * 300;
+                const effectiveTargetBytes = Math.max(targetBytes * 0.9, targetBytes - overheadBuffer);
+                const targetBytesPerPage = Math.max(3072, Math.floor(effectiveTargetBytes / numPages));
+                
+                const compressionRatio = targetBytes / file.size;
+                const renderScale = compressionRatio < 0.3 ? 0.6 : (compressionRatio < 0.6 ? 0.8 : 1.0);
+
                 const newPdfDoc = await window.PDFLib.PDFDocument.create();
 
                 for (let i = 1; i <= numPages; i++) {
                     if (statusCallback) {
                         const percent = Math.round((i / numPages) * 100);
-                        statusCallback(`Processing PDF: Page ${i} of ${numPages} (${percent}%)`);
+                        statusCallback(`Optimizing PDF: Page ${i} of ${numPages} (${percent}%)`);
                     }
 
                     const page = await pdfDoc.getPage(i);
-                    let scale = numPages > 100 ? 0.6 : 0.85;
-                    let viewport = page.getViewport({ scale: scale });
+                    let viewport = page.getViewport({ scale: renderScale });
                     
                     let canvas = document.createElement('canvas');
                     let ctx = canvas.getContext('2d');
@@ -218,13 +215,12 @@ document.addEventListener('DOMContentLoaded', () => {
                         height: viewport.height,
                     });
 
-                    // Yield execution thread every few pages to prevent freezing the browser UI
-                    if (i % 5 === 0) {
-                        await new Promise(r => setTimeout(r, 10));
+                    if (i % 4 === 0) {
+                        await new Promise(r => setTimeout(r, 5));
                     }
                 }
 
-                if (statusCallback) statusCallback('Finalizing and packaging compressed PDF...');
+                if (statusCallback) statusCallback('Finalizing targeted file size packaging...');
                 const pdfBytes = await newPdfDoc.save();
                 return { blob: new Blob([pdfBytes], { type: 'application/pdf' }), ext: 'pdf' };
             } catch (pdfErr) {
@@ -232,7 +228,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error("SERVER_FALLBACK");
             }
         } else if (isImage) {
-            if (statusCallback) statusCallback('Optimizing image to target size...');
+            if (statusCallback) statusCallback('Targeting precise image file size...');
             const mimeType = file.type || 'image/jpeg';
             return new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -270,7 +266,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (statusDiv) {
                 statusDiv.classList.remove('hidden');
-                statusDiv.textContent = 'Initializing compression engine...';
+                statusDiv.textContent = 'Initializing target size optimization...';
                 statusDiv.style.color = '#007bff';
             }
 
@@ -354,7 +350,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 window.URL.revokeObjectURL(downloadUrl);
 
                 if (statusDiv) {
-                    statusDiv.textContent = 'Success! Your compressed file has been downloaded.';
+                    statusDiv.textContent = `Success! Downloaded file size: ~${Math.round(blob.size / 1024)} KB (Target: ${targetSizeVal} KB).`;
                     statusDiv.style.color = '#28a745';
                 }
             } catch (err) {
@@ -369,3 +365,4 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 });
+```[cite: 5, 6, 7]
