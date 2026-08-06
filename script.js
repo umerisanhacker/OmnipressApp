@@ -107,8 +107,7 @@ document.addEventListener('DOMContentLoaded', () => {
         let bestBlob = null;
         let currentQuality = 0.90;
 
-        // Phase 1: High-clarity quality-only reduction preserving strict dimensions and aspect ratio
-        while (currentQuality >= 0.35) {
+        while (currentQuality >= 0.30) {
             let blob = await new Promise(res => canvas.toBlob(res, mimeType, currentQuality));
             if (blob) {
                 bestBlob = blob;
@@ -119,9 +118,8 @@ document.addEventListener('DOMContentLoaded', () => {
             currentQuality -= 0.05;
         }
 
-        // Phase 2: Gentle scaling only if quality adjustments alone didn't suffice
         if (bestBlob && bestBlob.size > targetBytes) {
-            let scale = 0.90;
+            let scale = 0.85;
             for (let i = 0; i < 3; i++) {
                 let targetW = Math.round(width * scale);
                 let targetH = Math.round(height * scale);
@@ -130,7 +128,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ctx.clearRect(0, 0, targetW, targetH);
                 ctx.drawImage(img, 0, 0, targetW, targetH);
 
-                let blob = await new Promise(res => canvas.toBlob(res, mimeType, 0.65));
+                let blob = await new Promise(res => canvas.toBlob(res, mimeType, 0.60));
                 if (blob) {
                     bestBlob = blob;
                     if (blob.size <= targetBytes) break;
@@ -155,10 +153,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 const pdfDoc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
                 const numPages = pdfDoc.numPages;
                 
-                const overheadBuffer = numPages * 300;
-                const effectiveTargetBytes = Math.max(targetBytes * 0.9, targetBytes - overheadBuffer);
-                const targetBytesPerPage = Math.max(3072, Math.floor(effectiveTargetBytes / numPages));
-
+                // Dynamically calculate render scale based on target vs original file size ratio
+                const compressionRatio = targetBytes / file.size;
+                const renderScale = Math.min(1.0, Math.max(0.45, Math.sqrt(compressionRatio)));
+                
+                const targetBytesPerPage = Math.max(8192, Math.floor(targetBytes / numPages));
                 const newPdfDoc = await window.PDFLib.PDFDocument.create();
 
                 for (let i = 1; i <= numPages; i++) {
@@ -168,7 +167,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
 
                     const page = await pdfDoc.getPage(i);
-                    let viewport = page.getViewport({ scale: 1.0 });
+                    let viewport = page.getViewport({ scale: renderScale });
                     
                     let canvas = document.createElement('canvas');
                     let ctx = canvas.getContext('2d');
@@ -177,7 +176,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     await page.render({ canvasContext: ctx, viewport: viewport }).promise;
 
                     let img = new Image();
-                    img.src = canvas.toDataURL('image/jpeg', 0.92);
+                    img.src = canvas.toDataURL('image/jpeg', 0.85);
                     await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
 
                     let result = await compressImageToTargetObject(img, targetBytesPerPage, 'image/jpeg', 'jpg');
@@ -185,12 +184,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     const imageBytes = await result.blob.arrayBuffer();
                     const embeddedImage = await newPdfDoc.embedJpg(imageBytes);
                     
-                    const newPage = newPdfDoc.addPage([viewport.width, viewport.height]);
+                    const origViewport = page.getViewport({ scale: 1.0 });
+                    const newPage = newPdfDoc.addPage([origViewport.width, origViewport.height]);
                     newPage.drawImage(embeddedImage, {
                         x: 0,
                         y: 0,
-                        width: viewport.width,
-                        height: viewport.height,
+                        width: origViewport.width,
+                        height: origViewport.height,
                     });
 
                     if (i % 4 === 0) {
