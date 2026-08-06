@@ -5,26 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OmniPress - Universal File Compressor & Converter</title>
     <link rel="stylesheet" href="style.css">
-    <style>
-        /* Ensures the drop zone acts as a container for the native file input overlay */
-        .drop-zone {
-            position: relative;
-            cursor: pointer;
-        }
-        /* Stretches the file input over the entire box transparently for native clicks */
-        .drop-zone-input {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            opacity: 0;
-            cursor: pointer;
-            z-index: 10;
-        }
-    </style>
 </head>
 <body>
+    <!-- Main Hero & Tool Section -->
     <section class="hero-section">
         <div class="glass-container main-compressor">
             <header>
@@ -33,61 +16,59 @@
             </header>
 
             <main>
-    <div id="uploadForm">
-        <!-- Using a <label for="fileInput"> makes the entire box natively clickable -->
-        <label class="drop-zone" id="dropZone" for="fileInput">
-            <input type="file" id="fileInput" name="file" class="drop-zone-input" style="display: none;" accept="*/*">
-            
-            <span class="drop-zone-prompt" id="dropZonePrompt">
-                Drag & drop ANY file here or <span class="browse-link">browse</span>
-            </span>
-            
-            <div id="previewContainer" class="hidden">
-                <div id="fileIconPreview" style="font-size: 4rem; margin-bottom: 10px;">📄</div>
-                <img id="imagePreview" src="" alt="Image Preview" class="hidden">
-                <p id="fileNameDisplay" style="margin-bottom: 15px; font-weight: bold; word-break: break-all;"></p>
-                <button type="button" id="cancelBtn" class="btn-cancel">Remove File</button>
-            </div>
-        </label>
+                <div id="uploadForm">
+                    <div class="drop-zone" id="dropZone">
+                        <input type="file" id="fileInput" name="file" class="drop-zone-input" style="display: none;" accept="*/*">
+                        
+                        <span class="drop-zone-prompt" id="dropZonePrompt">
+                            Drag & drop ANY file here or <span class="browse-link">browse</span>
+                        </span>
+                        
+                        <div id="previewContainer" class="hidden">
+                            <div id="fileIconPreview" style="font-size: 3rem; margin-bottom: 5px;">📄</div>
+                            <p id="fileNameDisplay" style="margin-bottom: 10px; font-weight: bold; word-break: break-all; color: #fff;"></p>
+                            <button type="button" id="cancelBtn" class="btn-cancel" style="background: #dc3545; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer;">Remove File</button>
+                        </div>
+                    </div>
 
-        <div class="settings-group">
-            <label for="targetSize">Target File Size (KB):</label>
-            <input type="number" id="targetSize" name="targetSize" value="1500" min="10">
-        </div>
+                    <div class="settings-group">
+                        <label for="targetSize">Target File Size (KB):</label>
+                        <input type="number" id="targetSize" name="targetSize" value="1500" min="10">
+                    </div>
 
-        <div class="settings-group">
-            <label for="outputFormat">Format & Conversion:</label>
-            <select id="outputFormat" name="outputFormat" class="format-select">
-                <option value="auto">Smart Compress (Keep Original Format)</option>
-                <optgroup label="Images">
-                    <option value="jpg">Convert to JPG</option>
-                    <option value="jpeg">Convert to JPEG</option>
-                    <option value="png">Convert to PNG</option>
-                    <option value="webp">Convert to WebP</option>
-                    <option value="avif">Convert to AVIF</option>
-                </optgroup>
-                <optgroup label="Video & Audio">
-                    <option value="mp4">Compress Video (MP4)</option>
-                    <option value="mp3">Extract Audio (MP3)</option>
-                </optgroup>
-                <optgroup label="Documents & Archives">
-                    <option value="pdf">Archive & Compress PDF</option>
-                    <option value="docx">Archive Word Doc (DOCX)</option>
-                    <option value="txt">Compress Text (TXT)</option>
-                    <option value="zip">Compress into ZIP Archive</option>
-                </optgroup>
-            </select>
-        </div>
+                    <div class="settings-group">
+                        <label for="outputFormat">Format & Conversion:</label>
+                        <select id="outputFormat" name="outputFormat" class="format-select">
+                            <option value="auto">Smart Compress (Keep Original Format)</option>
+                            <optgroup label="Images">
+                                <option value="jpg">Convert to JPG</option>
+                                <option value="jpeg">Convert to JPEG</option>
+                                <option value="png">Convert to PNG</option>
+                                <option value="webp">Convert to WebP</option>
+                                <option value="avif">Convert to AVIF</option>
+                            </optgroup>
+                            <optgroup label="Video & Audio">
+                                <option value="mp4">Compress Video (MP4)</option>
+                                <option value="mp3">Extract Audio (MP3)</option>
+                            </optgroup>
+                            <optgroup label="Documents & Archives">
+                                <option value="pdf">Archive & Compress PDF</option>
+                                <option value="docx">Archive Word Doc (DOCX)</option>
+                                <option value="txt">Compress Text (TXT)</option>
+                                <option value="zip">Compress into ZIP Archive</option>
+                            </optgroup>
+                        </select>
+                    </div>
 
-        <button type="button" id="compressBtn" class="btn">Process & Download File</button>
-    </div>
+                    <button type="button" id="compressBtn" class="btn">Process & Download File</button>
+                </div>
 
-    <div id="status" class="hidden" style="margin-top: 15px; font-weight: bold; text-align: center;"></div>
-</main>
+                <div id="status" class="hidden" style="margin-top: 15px; font-weight: bold; text-align: center;"></div>
+            </main>
         </div>
     </section>
 
-    <!-- Info Sections -->
+    <!-- 4 Steps Section -->
     <section class="info-section">
         <div class="info-container text-center">
             <h2>How to Compress Any File Online</h2>
@@ -113,6 +94,110 @@
                     <div class="icon-circle icon-green">✅</div>
                     <h3>4. Download</h3>
                     <p>Grab your perfectly sized, highly optimized file straight to your device.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- 6 Tiles Feature Section -->
+    <section class="info-section">
+        <div class="info-container text-center">
+            <h2>Why Use OmniPress?</h2>
+            <p class="subtitle">The ultimate toolkit for media and document optimization</p>
+
+            <div class="why-grid">
+                <div class="glass-card why-card">
+                    <div class="icon-circle icon-small icon-pink">🎥</div>
+                    <h3>Video Ready</h3>
+                    <p>Compress heavy MP4s and MOVs with built-in processing engines without losing quality.</p>
+                </div>
+                <div class="glass-card why-card">
+                    <div class="icon-circle icon-small icon-purple">📚</div>
+                    <h3>Document Crunching</h3>
+                    <p>Shrink massive PDFs, DOCXs, and text reports so they can easily be attached to emails.</p>
+                </div>
+                <div class="glass-card why-card">
+                    <div class="icon-circle icon-small icon-orange">🎯</div>
+                    <h3>Target Precision</h3>
+                    <p>Stop guessing. Enter exactly how many Kilobytes you need, and the engine handles the math.</p>
+                </div>
+                <div class="glass-card why-card">
+                    <div class="icon-circle icon-small icon-blue">🌐</div>
+                    <h3>Universal Access</h3>
+                    <p>No software required. Compress any file directly from your mobile, tablet, or desktop browser.</p>
+                </div>
+                <div class="glass-card why-card">
+                    <div class="icon-circle icon-small icon-green">🔒</div>
+                    <h3>Absolute Privacy</h3>
+                    <p>Files are processed securely and are destroyed the second your download finishes.</p>
+                </div>
+                <div class="glass-card why-card">
+                    <div class="icon-circle icon-small icon-brown">✨</div>
+                    <h3>Zero Watermarks</h3>
+                    <p>Get premium-grade compression without us plastering our logo across your work.</p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Deep Dive & Extra Explanations -->
+    <section class="info-section">
+        <div class="info-container text-left glass-card deep-dive" style="padding: 3rem;">
+            <h2 style="text-align: center; margin-bottom: 2rem;">The Ultimate Optimization Workflow</h2>
+            <p>Heavy files are the number one cause of slow loading times, storage limits, and email rejections. OmniPress was built to solve this exact problem by giving you absolute control over your file payloads across all standard formats.</p>
+            
+            <h3>Comprehensive Format Support</h3>
+            <p>Whether you are converting transparent graphics to <strong>PNG</strong> or <strong>WebP</strong>, shrinking high-resolution <strong>MP4</strong> video streams, or packaging documents into efficient <strong>ZIP</strong> archives, our unified engine handles everything seamlessly.</p>
+            
+            <h3>How our Routing Engine works</h3>
+            <p>When you drop a file, OmniPress detects its MIME type and routes it through specialized optimization pipelines—leveraging high-speed graphics libraries for images, optimized streams for video, and compression algorithms for documents.</p>
+        </div>
+    </section>
+
+    <!-- 6 FAQs -->
+    <section class="info-section">
+        <div class="info-container">
+            <h2 class="text-center" style="margin-bottom: 3rem;">Frequently Asked Questions</h2>
+            
+            <div class="accordion glass-card">
+                <button class="accordion-btn">Is this compressor entirely free to use?</button>
+                <div class="accordion-content">
+                    <p>Yes! OmniPress is 100% free to use with no hidden fees, subscriptions, or watermarks.</p>
+                </div>
+            </div>
+
+            <div class="accordion glass-card">
+                <button class="accordion-btn">Does video compression work out of the box?</button>
+                <div class="accordion-content">
+                    <p>Yes! We have integrated automated binary modules so video and audio files compress seamlessly without requiring manual system installations.</p>
+                </div>
+            </div>
+
+            <div class="accordion glass-card">
+                <button class="accordion-btn">Are my uploaded files safe and private?</button>
+                <div class="accordion-content">
+                    <p>Absolutely. Your personal files are processed securely in memory and deleted immediately after download.</p>
+                </div>
+            </div>
+
+            <div class="accordion glass-card">
+                <button class="accordion-btn">What image formats are supported?</button>
+                <div class="accordion-content">
+                    <p>We support all major formats including JPG, JPEG, PNG, WebP, and AVIF with full conversion options between them.</p>
+                </div>
+            </div>
+
+            <div class="accordion glass-card">
+                <button class="accordion-btn">Is there a maximum file size limit for uploads?</button>
+                <div class="accordion-content">
+                    <p>Our secure server allows files up to 200MB, accommodating large videos and document packages easily.</p>
+                </div>
+            </div>
+
+            <div class="accordion glass-card">
+                <button class="accordion-btn">Can I compress documents like Word files?</button>
+                <div class="accordion-content">
+                    <p>Yes, you can optimize DOCX, TXT, PDF, and archive them into compressed ZIP folders directly.</p>
                 </div>
             </div>
         </div>
