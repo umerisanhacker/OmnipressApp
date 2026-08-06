@@ -71,6 +71,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // Dynamically load external libraries (PDF.js, PDF-Lib, JSZip)
     async function loadLibraries() {
         if (!window.pdfjsLib) {
             await new Promise((resolve, reject) => {
@@ -93,38 +94,98 @@ document.addEventListener('DOMContentLoaded', () => {
                 document.head.appendChild(script);
             });
         }
-    }
-
-    async function renderPdfToCanvas(file) {
-        await loadLibraries();
-        const arrayBuffer = await file.arrayBuffer();
-        const loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });
-        const pdfDoc = await loadingTask.promise;
-        const page = await pdfDoc.getPage(1);
-        
-        let viewport = page.getViewport({ scale: 2.0 });
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        canvas.height = viewport.height;
-        canvas.width = viewport.width;
-
-        await page.render({ canvasContext: context, viewport: viewport }).promise;
-        return canvas;
+        if (!window.JSZip) {
+            await new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+                script.onload = resolve;
+                script.onerror = reject;
+                document.head.appendChild(script);
+            });
+        }
     }
 
     async function getBlobWithQuality(canvas, mimeType, quality) {
         return new Promise(resolve => canvas.toBlob(resolve, mimeType, quality));
     }
 
+    // Helper for binary search quality optimization on canvas
+    async function compressCanvasToTarget(canvas, mimeType, targetBytes) {
+        let low = 0.05;
+        let high = 1.0;
+        let optimalBlob = null;
+
+        let maxBlob = await getBlobWithQuality(canvas, mimeType, high);
+        if (maxBlob && maxBlob.size <= targetBytes) return maxBlob;
+
+        for (let step = 0; step < 6; step++) {
+            let mid = (low + high) / 2;
+            let candidateBlob = await getBlobWithQuality(canvas, mimeType, mid);
+            
+            if (candidateBlob) {
+                if (candidateBlob.size <= targetBytes) {
+                    optimalBlob = candidateBlob;
+                    low = mid;
+                } else {
+                    high = mid;
+                }
+            }
+        }
+        return optimalBlob || await getBlobWithQuality(canvas, mimeType, low);
+    }
+
     async function compressFileClientSide(file, targetSizeKB, format) {
+        await loadLibraries();
         const targetBytes = targetSizeKB * 1024;
         const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-        
+        const isImageExportFormat = ['jpg', 'jpeg', 'png', 'webp', 'avif'].includes(format);
+
+        // If user wants to export a multi-page PDF into individual image pages packed in a ZIP
+        if (isPdf && isImageExportFormat) {
+            const arrayBuffer = await file.arrayBuffer();
+            const pdfDoc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            const numPages = pdfDoc.numPages;
+            
+            const zip = new window.JSZip();
+            const perPageTargetBytes = Math.max(15000, Math.floor(targetBytes / numPages));
+
+            let mimeType = 'image/jpeg';
+            let ext = format;
+            if (ext === 'png') mimeType = 'image/png';
+            if (ext === 'webp') mimeType = 'image/webp';
+            if (ext === 'avif') mimeType = 'image/avif';
+
+            for (let i = 1; i <= numPages; i++) {
+                const page = await pdfDoc.getPage(i);
+                const viewport = page.getViewport({ scale: 2.0 });
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+
+                await page.render({ canvasContext: ctx, viewport: viewport }).promise;
+
+                let pageBlob = await compressCanvasToTarget(canvas, mimeType, perPageTargetBytes);
+                const baseName = file.name.substring(0, file.name.lastIndexOf('.')) || 'document';
+                zip.file(`${baseName}_page_${i}.${ext}`, pageBlob);
+            }
+
+            const zipBlob = await zip.generateAsync({ type: 'blob' });
+            return { blob: zipBlob, ext: 'zip' };
+        }
+
+        // Single-page PDF or Standard PDF compression back to PDF
         let canvas = document.createElement('canvas');
         let ctx = canvas.getContext('2d');
 
         if (isPdf) {
-            canvas = await renderPdfToCanvas(file);
+            const arrayBuffer = await file.arrayBuffer();
+            const pdfDoc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+            const page = await pdfDoc.getPage(1);
+            let viewport = page.getViewport({ scale: 2.0 });
+            canvas.height = viewport.height;
+            canvas.width = viewport.width;
+            await page.render({ canvasContext: ctx, viewport: viewport }).promise;
         } else {
             await new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -145,92 +206,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         let mimeType = 'image/jpeg';
-        
-        // Respect the user's format dropdown selection if specified, otherwise default intelligently
-        let ext = 'jpg';
-        if (format && format !== 'auto') {
+        let ext = isPdf ? 'pdf' : 'jpg';
+
+        if (!isPdf && format !== 'auto') {
             ext = format;
-        } else if (isPdf) {
-            ext = 'pdf';
+            if (format === 'png') mimeType = 'image/png';
+            if (format === 'webp') mimeType = 'image/webp';
+            if (format === 'avif') mimeType = 'image/avif';
         }
 
-        if (!isPdf) {
-            if (format === 'png' || file.type === 'image/png') {
-                mimeType = 'image/png';
-                ext = format === 'auto' ? 'png' : format;
-            } else if (format === 'webp') {
-                mimeType = 'image/webp';
-            } else if (format === 'avif') {
-                mimeType = 'image/avif';
-            }
-        }
+        let bestBlob = await compressCanvasToTarget(canvas, mimeType, targetBytes);
 
-        let scale = 1.0;
-        let bestBlob = null;
-
-        for (let attempt = 0; attempt < 8; attempt++) {
-            let currentWidth = Math.max(100, Math.round(canvas.width * scale));
-            let currentHeight = Math.max(100, Math.round(canvas.height * scale));
-            
-            let tempCanvas = document.createElement('canvas');
-            tempCanvas.width = currentWidth;
-            tempCanvas.height = currentHeight;
-            let tempCtx = tempCanvas.getContext('2d');
-            tempCtx.drawImage(canvas, 0, 0, currentWidth, currentHeight);
-
-            if (mimeType === 'image/png' && !isPdf && format !== 'docx') {
-                const blob = await getBlobWithQuality(tempCanvas, mimeType, 1.0);
-                if (blob) {
-                    bestBlob = blob;
-                    if (blob.size <= targetBytes) {
-                        return { blob, ext };
-                    }
-                }
-                scale *= 0.75;
-            } else {
-                let low = 0.05;
-                let high = 1.0;
-                let optimalBlob = null;
-
-                let maxBlob = await getBlobWithQuality(tempCanvas, mimeType, high);
-                if (maxBlob && maxBlob.size <= targetBytes && !isPdf && format !== 'docx') {
-                    return { blob: maxBlob, ext };
-                }
-
-                for (let step = 0; step < 6; step++) {
-                    let mid = (low + high) / 2;
-                    let candidateBlob = await getBlobWithQuality(tempCanvas, mimeType, mid);
-                    
-                    if (candidateBlob) {
-                        if (candidateBlob.size <= targetBytes) {
-                            optimalBlob = candidateBlob;
-                            low = mid;
-                        } else {
-                            high = mid;
-                        }
-                    }
-                }
-
-                if (optimalBlob) {
-                    bestBlob = optimalBlob;
-                    if (!isPdf || format === 'jpg' || format === 'png' || format === 'webp') {
-                        return { blob: bestBlob, ext };
-                    }
-                    break;
-                } else {
-                    bestBlob = await getBlobWithQuality(tempCanvas, mimeType, low);
-                }
-            }
-
-            scale *= 0.80;
-        }
-
-        // If it's a PDF and format requested PDF or Auto, wrap it back into a PDF container
-        if (isPdf && bestBlob && (ext === 'pdf' || format === 'auto')) {
-            await loadLibraries();
+        if (isPdf && (ext === 'pdf' || format === 'auto')) {
             const pdfDoc = await window.PDFLib.PDFDocument.create();
             const page = pdfDoc.addPage([canvas.width, canvas.height]);
-            
             const imageBytes = await bestBlob.arrayBuffer();
             const embeddedImage = await pdfDoc.embedJpg(imageBytes);
             
@@ -242,8 +231,7 @@ document.addEventListener('DOMContentLoaded', () => {
             });
 
             const pdfBytes = await pdfDoc.save();
-            const finalPdfBlob = new Blob([pdfBytes], { type: 'application/pdf' });
-            return { blob: finalPdfBlob, ext: 'pdf' };
+            return { blob: new Blob([pdfBytes], { type: 'application/pdf' }), ext: 'pdf' };
         }
 
         return { blob: bestBlob || file, ext };
