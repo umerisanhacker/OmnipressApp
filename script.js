@@ -94,32 +94,64 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function getBlobWithQuality(canvas, mimeType, quality) {
-        return new Promise(resolve => canvas.toBlob(resolve, mimeType, quality));
-    }
+    async function compressImageToTargetObject(img, targetBytes, mimeType, originalExt) {
+        let canvas = document.createElement('canvas');
+        let ctx = canvas.getContext('2d');
+        
+        let width = img.width;
+        let height = img.height;
+        let scale = 1.0;
+        let bestBlob = null;
+        
+        const isPng = mimeType === 'image/png';
+        
+        // Iteratively downscale dimensions and reduce quality until target size is achieved
+        for (let attempt = 0; attempt < 8; attempt++) {
+            canvas.width = Math.max(20, Math.round(width * scale));
+            canvas.height = Math.max(20, Math.round(height * scale));
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
 
-    async function compressCanvasToTarget(canvas, mimeType, targetBytes) {
-        let low = 0.05;
-        let high = 1.0;
-        let optimalBlob = null;
-
-        let maxBlob = await getBlobWithQuality(canvas, mimeType, high);
-        if (maxBlob && maxBlob.size <= targetBytes) return maxBlob;
-
-        for (let step = 0; step < 6; step++) {
-            let mid = (low + high) / 2;
-            let candidateBlob = await getBlobWithQuality(canvas, mimeType, mid);
-            
-            if (candidateBlob) {
-                if (candidateBlob.size <= targetBytes) {
-                    optimalBlob = candidateBlob;
-                    low = mid;
-                } else {
-                    high = mid;
+            if (!isPng && (mimeType === 'image/jpeg' || mimeType === 'image/webp')) {
+                let low = 0.05, high = 1.0;
+                for (let q = 0; q < 5; q++) {
+                    let mid = (low + high) / 2;
+                    let blob = await new Promise(res => canvas.toBlob(res, mimeType, mid));
+                    if (blob) {
+                        bestBlob = blob;
+                        if (blob.size <= targetBytes) {
+                            return { blob, ext: originalExt };
+                        }
+                        if (blob.size > targetBytes) {
+                            high = mid;
+                        } else {
+                            low = mid;
+                        }
+                    }
+                }
+            } else {
+                let blob = await new Promise(res => canvas.toBlob(res, mimeType));
+                if (blob) {
+                    bestBlob = blob;
+                    if (blob.size <= targetBytes) {
+                        return { blob, ext: originalExt };
+                    }
                 }
             }
+
+            scale *= 0.8; // Reduce dimensions by 20% each loop iteration
         }
-        return optimalBlob || await getBlobWithQuality(canvas, mimeType, low);
+
+        if (bestBlob) {
+            return { blob: bestBlob, ext: originalExt };
+        }
+
+        // Ultimate fallback
+        canvas.width = Math.max(20, Math.round(width * 0.2));
+        canvas.height = Math.max(20, Math.round(height * 0.2));
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        let fallbackBlob = await new Promise(res => canvas.toBlob(res, mimeType, 0.5));
+        return { blob: fallbackBlob || img, ext: originalExt };
     }
 
     async function compressFileClientSide(file, targetSizeKB) {
@@ -129,32 +161,53 @@ document.addEventListener('DOMContentLoaded', () => {
         const isPdf = file.type === 'application/pdf' || extName === 'pdf';
         const isImage = file.type.startsWith('image/') || ['jpg', 'jpeg', 'png', 'webp', 'avif'].includes(extName);
 
-        let canvas = document.createElement('canvas');
-        let ctx = canvas.getContext('2d');
-        let mimeType = 'image/jpeg';
-
         if (isPdf) {
             const arrayBuffer = await file.arrayBuffer();
             const pdfDoc = await window.pdfjsLib.getDocument({ data: arrayBuffer }).promise;
             const page = await pdfDoc.getPage(1);
-            let viewport = page.getViewport({ scale: 2.0 });
+            let viewport = page.getViewport({ scale: 1.5 });
+            
+            let canvas = document.createElement('canvas');
+            let ctx = canvas.getContext('2d');
             canvas.height = viewport.height;
             canvas.width = viewport.width;
             await page.render({ canvasContext: ctx, viewport: viewport }).promise;
-            mimeType = 'image/jpeg';
+
+            let img = new Image();
+            img.src = canvas.toDataURL('image/jpeg', 0.9);
+            await new Promise((res, rej) => { img.onload = res; img.onerror = rej; });
+
+            let result = await compressImageToTargetObject(img, targetBytes, 'image/jpeg', 'jpg');
+            
+            const newPdfDoc = await window.PDFLib.PDFDocument.create();
+            const newPage = newPdfDoc.addPage([canvas.width, canvas.height]);
+            const imageBytes = await result.blob.arrayBuffer();
+            const embeddedImage = await newPdfDoc.embedJpg(imageBytes);
+            
+            newPage.drawImage(embeddedImage, {
+                x: 0,
+                y: 0,
+                width: canvas.width,
+                height: canvas.height,
+            });
+
+            const pdfBytes = await newPdfDoc.save();
+            return { blob: new Blob([pdfBytes], { type: 'application/pdf' }), ext: 'pdf' };
         } else if (isImage) {
-            mimeType = file.type || 'image/jpeg';
-            await new Promise((resolve, reject) => {
+            const mimeType = file.type || 'image/jpeg';
+            return new Promise((resolve, reject) => {
                 const reader = new FileReader();
                 reader.readAsDataURL(file);
-                reader.onload = (event) => {
+                reader.onload = async (event) => {
                     const img = new Image();
                     img.src = event.target.result;
-                    img.onload = () => {
-                        canvas.width = img.width;
-                        canvas.height = img.height;
-                        ctx.drawImage(img, 0, 0);
-                        resolve();
+                    img.onload = async () => {
+                        try {
+                            const res = await compressImageToTargetObject(img, targetBytes, mimeType, extName);
+                            resolve(res);
+                        } catch (err) {
+                            reject(err);
+                        }
                     };
                     img.onerror = reject;
                 };
@@ -163,27 +216,6 @@ document.addEventListener('DOMContentLoaded', () => {
         } else {
             return { blob: file, ext: extName };
         }
-
-        let bestBlob = await compressCanvasToTarget(canvas, mimeType, targetBytes);
-
-        if (isPdf) {
-            const pdfDoc = await window.PDFLib.PDFDocument.create();
-            const page = pdfDoc.addPage([canvas.width, canvas.height]);
-            const imageBytes = await bestBlob.arrayBuffer();
-            const embeddedImage = await pdfDoc.embedJpg(imageBytes);
-            
-            page.drawImage(embeddedImage, {
-                x: 0,
-                y: 0,
-                width: canvas.width,
-                height: canvas.height,
-            });
-
-            const pdfBytes = await pdfDoc.save();
-            return { blob: new Blob([pdfBytes], { type: 'application/pdf' }), ext: 'pdf' };
-        }
-
-        return { blob: bestBlob || file, ext: extName };
     }
 
     if (compressBtn) {
