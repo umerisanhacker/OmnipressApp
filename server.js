@@ -23,6 +23,8 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
+app.get('/ping', (req, res) => res.send('OK'));
+
 const storage = multer.memoryStorage();
 const upload = multer({ 
     storage: storage,
